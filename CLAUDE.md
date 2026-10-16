@@ -104,7 +104,7 @@ docker compose build bc && docker compose up -d --wait
 3. **`scripts/entrypoint.sh`** — the long-running orchestration. Steps:
    - **Step 1**: Download BC artifacts (or wait for them if `BC_ARTIFACT_URL=skip`). Cached in the `bc-artifacts` volume.
    - **Step 2**: Copy service tier into `/bc/service/`, replace the Windows Reporting Service PE binary with our Linux .NET stub (`stubs/reporting-service-stub`), symlink `kernel32.dll`/`user32.dll`/etc. → `libwin32_stubs.so`.
-   - **Step 2b**: Apply on-disk binary patches (`CodeAnalysis.dll`, `Mono.Cecil.dll`, `Nav.Ncl.dll` `Assembly.Load`→`LoadFrom`, `TestPageClient.dll` async fix — opt-in only via `BC_TESTPAGE_ASYNC_PATCH=1` as of issue #78, see `KNOWN-LIMITATIONS.md`), copy refasm DLLs, rename `Add-ins` → `Add-Ins` (case-sensitivity fix).
+   - **Step 2b**: Apply on-disk binary patches (`CodeAnalysis.dll`, `Mono.Cecil.dll`, `Nav.Ncl.dll` `Assembly.Load`→`LoadFrom`, `TestPageClient.dll` async fix — opt-in only via `BC_TESTPAGE_ASYNC_PATCH=1` as of issue #78, see `KNOWN-LIMITATIONS.md`), the Windows text patches (CRLF, code page 1252, culture data — see "Windows text behaviour" below, `BC_WINDOWS_TEXT=0` turns them off), copy refasm DLLs, rename `Add-ins` → `Add-Ins` (case-sensitivity fix).
    - **Step 3**: Wait for SQL, restore the demo DB, create BC SQL login.
    - **Step 4**: Start BC, publish the TestRunnerExtension and any apps in `BC_TEST_APPS`, then write `/tmp/bc-ready` (which the healthcheck looks for) and `wait`.
 
@@ -897,6 +897,66 @@ Three things not to change without knowing why they are that way:
 Patch #26 (`BC_FAKE_ENCRYPTION=1`) is the pass-through proxy that used to stand
 in for all of this. It is opt-in and should stay that way — see
 `KNOWN-LIMITATIONS.md` for why its stated reason was wrong.
+
+## Windows text behaviour: rewritten in BC's IL (issue #113)
+
+A corpus run on an official Windows container disagreed with this tier on 219 tests, and
+almost all of them trace to a few values .NET bakes into CoreLib's precompiled code:
+`Environment.NewLine` (LF here, CRLF there) and `Encoding.GetEncoding(0)` (UTF-8 here, the
+ANSI code page there). No runtime hook reaches a constant inside R2R code, but the BC call
+sites are ordinary IL, so `src/tools/PatchNclTestPage` rewrites them on disk in Step 2b of
+`entrypoint.sh`. Four commands, each idempotent, applied to `Nav.Ncl.dll` and `Nav.Types.dll`
+(`newline` also to `YamlDotNet.dll`):
+
+| command | what it changes |
+|---|---|
+| `newline` | `Environment.NewLine` → CRLF; `StringBuilder.AppendLine`; `new XmlWriterSettings`, `StreamWriter`, `StringWriter` get `NewLine`/`NewLineChars` CRLF; `new XmlTextWriter(path, enc)` and `XDocument.Save(Stream, SaveOptions)` go through a helper |
+| `encoding` | every `Encoding.GetEncoding(int)` → a helper that treats 0 as 1252 |
+| `uri` | `new Uri(string)` in `NavHttpRequestMessage` / `NavHttpClient` refuses a leading `/` |
+| `culture` | every `CultureInfo.GetCultureInfo(...)` and `new CultureInfo(...)` result goes through `BcLinuxCulture` (U+202F → plain space, da-DK short date) |
+
+The OEM half of `TextEncoding::MSDos` lives in `src/StartupHook/kernel32_stubs.c`
+(`OemToCharBuffA` / `CharToOemBuffA`): code page 437 ↔ 1252 tables. BC builds its own MSDos
+tables from them once, with a pairing fix-up (`NCLManagedAdapter.Initialize`), so the stub
+supplies the base tables, not the final ones. The three control-glyph pairs in it
+(`0x14`↔`0xB6`, `0x15`↔`0xA7`, `0x0F`↔`0xA4`) are what makes the fix-up reproduce Windows'
+results; see `KNOWN-LIMITATIONS.md`. `BC_WINDOWS_TEXT=0` turns all of it off.
+
+Things that bit, so they stay fixed:
+
+- **The service-volume stamp must cover the patcher.** It used to hash only `StartupHook.dll`,
+  so a change to `PatchNclTestPage` alone (new patch, new flag) left a warm `/bc/service`
+  volume holding the DLLs the previous patcher wrote, and the new patch silently never ran.
+  The stamp is `v2` and includes the patcher's size/mtime and `BC_WINDOWS_TEXT`.
+- **Inserting an instruction can break a short branch, and nothing says so.** Cecil writes the
+  truncated one-byte offset, the branch lands on the wrong instruction, and the NST dies on
+  its first JIT of that method with `InvalidProgramException` (here in
+  `WindowsLanguageHelper`'s static constructor). Every patch that grows a method calls
+  `IlHelpers.LengthenShortBranches`. **Run `scripts/verify-patched-il.sh <service-dir>` after
+  touching a patch**: it patches a copy and diffs `ilverify` output against the originals
+  (Microsoft's own assemblies already report ~650 errors, only the difference counts). It
+  takes a few minutes and finds in seconds what a boot finds after ten.
+- **A branch that targets the instruction you rewrite must still land on the first
+  instruction of the replacement.** Rewrite the call in place and insert after it, or insert
+  before it and retarget. `InsertBefore` alone moves the instruction a branch pointed at.
+- **`BcLinuxCulture.cs` is source, not a library.** `PatchCulture` reads the patcher's own DLL
+  with Cecil and copies every method of that class into the target assembly. So it may call
+  only framework APIs and may not use lambdas, closures, static fields or try/catch (nothing
+  a plain IL copy carries over). The cache for the fixed cultures lives in
+  `AppDomain.GetData` because of that. Methods other than `Fix` are copied as
+  `Culture<Name>`.
+- **Use the raw xunit XML as the Windows reference, not the corpus's `failures.tsv`.** The
+  TSV flattens whitespace and control characters, which is exactly what this issue is about:
+  a U+202F in a Windows message shows as a plain space there and the two sides look
+  identical. Compare messages exactly, not after collapsing whitespace.
+- **The corpus pins Linux values, so a fix turns a passing test red.** "Same message as the
+  Windows container" is the success criterion, and the corpus tests need updating when this
+  lands there. Compile the corpus with `preprocessorSymbols` `BC27PLUS,BC28PLUS` or the
+  version-gated tests are missing from the run, and with the compiler CI uses
+  (`scripts/install-al-compiler.sh 29.0`).
+
+What is not fixed (collation, the `SystemId` version nibbles, default decimal places) is in
+the table at the top of `KNOWN-LIMITATIONS.md` with what is known about each.
 
 ## Web client on Linux (PoC, opt-in)
 
