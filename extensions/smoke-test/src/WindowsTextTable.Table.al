@@ -8,6 +8,7 @@ table 70010 "BC Linux Windows Text Blob"
     {
         field(1; Id; Integer) { }
         field(2; Data; Blob) { }
+        field(3; Stamp; DateTime) { }
     }
 
     keys

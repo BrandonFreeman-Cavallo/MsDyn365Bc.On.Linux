@@ -768,6 +768,15 @@ codeunit is in fact the LESS faithful of the two on that surface, so a
 corpus test that depended on it may now fail the way a Windows container fails
 it. The reusable workflow exposes the choice as `altool_transport`.
 
+A fifth shape routes to websocket (issue #120): a test that calls `NumberSequence.` and also
+uses `asserterror`. SQL Server rolls the whole transaction back when `CREATE SEQUENCE` hits an
+existing name (`XACT_ABORT` is OFF; reproduced with plain `sqlcmd`). On the hub's reused session
+the test scope then finds no transaction when `asserterror` rolls back to its savepoint, and the
+test fails with "Transaction was rolled back by the server." A fresh session (the `cli`
+transport), the websocket runner and a Windows container give the AL error. Measured on BC 29.0:
+`74214|74217` fails, `74217` alone passes. The root cause inside the hub is not found; the
+routing is the workaround, and only five corpus codeunits move.
+
 `test_runner=altool` (explicit force, BC 27/28's "catch hub regressions"
 mode) is untouched by any of this — it still runs every codeunit through
 the hub with no split, on purpose, so a real hub regression can't be
@@ -958,6 +967,13 @@ Things that bit, so they stay fixed:
   lands there. Compile the corpus with `preprocessorSymbols` `BC27PLUS,BC28PLUS` or the
   version-gated tests are missing from the run, and with the compiler CI uses
   (`scripts/install-al-compiler.sh 29.0`).
+
+- **The process default culture is fixed in the startup hook too (issue #120).** The IL rewrites
+  only reach cultures BC builds itself. Work BC runs on a pool thread without setting a culture
+  (`Query.SaveAsCsv` formats with `DateTime.ToString(CultureInfo.CurrentCulture)`) used the
+  process default, ICU en-US from `LANG=en_US.UTF-8`, so U+202F was still written before AM/PM.
+  `StartupHook.ApplyWindowsDefaultCulture` sets `DefaultThreadCurrentCulture` to a clone with
+  plain spaces; `BC_WINDOWS_TEXT=0` turns it off. `extensions/smoke-test` has a CSV guard.
 
 What is not fixed (collation, the `SystemId` version nibbles, default decimal places) is in
 the table at the top of `KNOWN-LIMITATIONS.md` with what is known about each.
