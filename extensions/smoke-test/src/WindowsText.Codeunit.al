@@ -182,4 +182,38 @@ codeunit 70010 "BC Linux Windows Text Tests"
             Hex += CopyStr(Digits, (B div 16) + 1, 1) + CopyStr(Digits, (B mod 16) + 1, 1);
         end;
     end;
+
+    [Test]
+    procedure QueryCsvDateTimeUsesAPlainSpaceBeforeAmPm()
+    var
+        Row: Record "BC Linux Windows Text Blob";
+        Holder: Record "BC Linux Windows Text Blob";
+        Q: Query "BC Linux Windows Text Query";
+        OutS: OutStream;
+        InS: InStream;
+        Line: Text;
+        I: Integer;
+    begin
+        // Issue #120: SaveAsCsv formats with the thread's default culture, which no BC code
+        // sets on a pool thread, so it was still the ICU en-US with U+202F before AM/PM.
+        Row.DeleteAll();
+        Row.Id := 1;
+        Row.Stamp := CreateDateTime(DMY2Date(5, 3, 2024), 143005T);
+        Row.Insert();
+
+        Holder.Id := 2;
+        Holder.Data.CreateOutStream(OutS);
+        Holder.Insert();
+        LibraryAssert.IsTrue(Q.SaveAsCsv(OutS), 'SaveAsCsv');
+        Holder.Modify();
+        Holder.CalcFields(Data);
+        Holder.Data.CreateInStream(InS);
+        InS.ReadText(Line);
+        InS.ReadText(Line);
+
+        LibraryAssert.IsTrue((StrPos(Line, ' AM') > 0) or (StrPos(Line, ' PM') > 0), 'plain space before AM/PM in: ' + Line);
+        for I := 1 to StrLen(Line) do
+            LibraryAssert.AreNotEqual(8239, Line[I], 'narrow no-break space at position ' + Format(I));
+        Row.DeleteAll();
+    end;
 }

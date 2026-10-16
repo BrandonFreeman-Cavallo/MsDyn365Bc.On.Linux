@@ -37,7 +37,10 @@ A test method is flagged "needs websocket" when any of:
       UI');`), or
   (c) its effective TestPermissions is anything other than `Disabled`, or
   (d) its body mentions the `Unhandled UI` error text — i.e. it asserts the
-      refusal itself, whatever call raised it (issue #93).
+      refusal itself, whatever call raised it (issue #93), or
+  (e) a test calls `NumberSequence.` and also uses `asserterror` (issue #120):
+      a failed sequence DDL statement dooms the SQL transaction, which the
+      hub's reused session cannot recover from.
 
 Rule (c) is issue #64, and unlike (a) and (b) it is measured rather than
 inferred. TestPermissions works "together with the OnBeforeTestRun and
@@ -107,6 +110,14 @@ ASSERTERROR_RE = re.compile(r'\basserterror\b', re.IGNORECASE)
 # produces it covers Confirm / Message / StrMenu / modal and non-modal page opens
 # alike, which no call-shape rule can enumerate.
 UNHANDLED_UI_RE = re.compile(r'\bUnhandled\s+UI\b', re.IGNORECASE)
+# A NumberSequence call in a test that also uses asserterror (issue #120). A
+# failing CREATE SEQUENCE / ALTER SEQUENCE makes SQL Server roll the whole
+# transaction back, not just the statement. On a hub session that has already run
+# another codeunit, the test scope then finds no transaction when asserterror
+# rolls back to its savepoint, and the test fails with "Transaction was rolled
+# back by the server." The websocket runner, a fresh session and a Windows
+# container all give the AL error instead.
+NUMBER_SEQUENCE_RE = re.compile(r'\bNumberSequence\s*\.', re.IGNORECASE)
 MODAL_CALL_RE = re.compile(r'\.(RunModal|Invoke)\s*\(|(?<![\w.])RunModal\s*\(', re.IGNORECASE)
 
 
@@ -179,6 +190,10 @@ def classify_al_source(paths: list[str]) -> dict[int, dict]:
             ):
                 cur.needs_websocket = True
             elif UNHANDLED_UI_RE.search("\n".join(proc_body)):
+                cur.needs_websocket = True
+            elif ASSERTERROR_RE.search("\n".join(proc_body)) and NUMBER_SEQUENCE_RE.search(
+                "\n".join(proc_body)
+            ):
                 cur.needs_websocket = True
 
         def flush_codeunit():

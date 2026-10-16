@@ -335,6 +335,38 @@ internal class StartupHook
     private static MethodInfo? _headerDictionaryContainsKeyMethod;
     private static ConstructorInfo? _stringValuesCtor;
 
+    // The process default culture (LANG=en_US.UTF-8 -> ICU en-US) writes U+202F before AM/PM, a
+    // Windows (NLS) tier a plain space. PatchNclTestPage fixes the cultures BC builds itself, but
+    // work that runs on a pool thread BC never gave a culture (query SaveAsCsv, issue #120) formats
+    // with the process default. Replace that default with a clone that has plain spaces.
+    // BC_WINDOWS_TEXT=0 turns it off together with the IL rewrites.
+    private static void ApplyWindowsDefaultCulture()
+    {
+        if (Environment.GetEnvironmentVariable("BC_WINDOWS_TEXT") == "0") return;
+        try
+        {
+            CultureInfo current = CultureInfo.CurrentCulture;
+            if (current.IsNeutralCulture || current.Name.Length == 0) return;
+            DateTimeFormatInfo src = current.DateTimeFormat;
+            CultureInfo copy = (CultureInfo)current.Clone();
+            DateTimeFormatInfo d = copy.DateTimeFormat;
+            d.ShortTimePattern = src.ShortTimePattern.Replace('\u202F', ' ');
+            d.LongTimePattern = src.LongTimePattern.Replace('\u202F', ' ');
+            d.ShortDatePattern = src.ShortDatePattern.Replace('\u202F', ' ');
+            d.LongDatePattern = src.LongDatePattern.Replace('\u202F', ' ');
+            d.FullDateTimePattern = src.FullDateTimePattern.Replace('\u202F', ' ');
+            d.AMDesignator = src.AMDesignator.Replace('\u202F', ' ');
+            d.PMDesignator = src.PMDesignator.Replace('\u202F', ' ');
+            copy = CultureInfo.ReadOnly(copy);
+            CultureInfo.DefaultThreadCurrentCulture = copy;
+            CultureInfo.CurrentCulture = copy;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] default culture fix skipped: {ex.Message}");
+        }
+    }
+
     public static void Initialize()
     {
         // Patch #6: Must be set before ANY System.Drawing type is accessed
@@ -342,6 +374,8 @@ internal class StartupHook
 
 
         Console.WriteLine("[StartupHook] Initializing Linux compatibility patches...");
+
+        ApplyWindowsDefaultCulture();
 
         // Debug aid (opt-in): BC_DEBUG_FIRSTCHANCE=1 prints every thrown exception
         // with its full inner chain to stderr. Mirrors WEBCLIENT_DEBUG_FIRSTCHANCE in

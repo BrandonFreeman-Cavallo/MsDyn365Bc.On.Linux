@@ -59,6 +59,12 @@ CASES = [
      "Disabled", True, "rule (b) still fires"),
     (6, "        Host.OpenView();",
      "Restrictive", True, "rule (c) still fires"),
+    (7, "        asserterror NumberSequence.Insert('X');\n        Assert.ExpectedError('already exists');",
+     "Disabled", True, "issue #120: a sequence error under asserterror"),
+    (8, "        NumberSequence.Insert('X');\n        NumberSequence.Delete('X');",
+     "Disabled", False, "a sequence without asserterror stays fast"),
+    (9, "        asserterror Error('x');\n        Assert.ExpectedError('x');",
+     "Disabled", False, "asserterror without a sequence stays fast"),
 ]
 
 
