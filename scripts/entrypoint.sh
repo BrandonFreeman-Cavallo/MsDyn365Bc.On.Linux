@@ -213,7 +213,12 @@ STEP2_START=$(date +%s)
 # copy it to. Everything else Step 2 writes is a constant.
 SERVICE_STAMP_FILE="$SERVICE_DIR/.bc-service-stamp"
 SERVICE_CONFIG_FP=$(printf '%s|%s|%s' "$SQL_SERVER" "$BC_DB_USER" "$BC_DB_PASSWORD" | md5sum | cut -c1-12)
-SERVICE_STAMP="v1|platform=$PLATFORM_VERSION|image=$(stat -c '%s-%Y' /bc/hook/StartupHook.dll 2>/dev/null || echo unknown)|config=$SERVICE_CONFIG_FP"
+# The fourth is the binary patcher plus the switch that turns its text patches on. The hook
+# alone is not enough: a change to PatchNclTestPage (or BC_WINDOWS_TEXT) rewrites the
+# service DLLs but leaves StartupHook.dll untouched, so a warm volume kept the DLLs the
+# previous patcher produced and the new patch never ran.
+SERVICE_PATCHER_FP="$(stat -c '%s-%Y' /bc/tools/patcher/PatchNclTestPage.dll 2>/dev/null || echo none)-text${BC_WINDOWS_TEXT:-1}"
+SERVICE_STAMP="v2|platform=$PLATFORM_VERSION|image=$(stat -c '%s-%Y' /bc/hook/StartupHook.dll 2>/dev/null || echo unknown)|patcher=$SERVICE_PATCHER_FP|config=$SERVICE_CONFIG_FP"
 if [ -f "$SERVICE_DIR/Microsoft.Dynamics.Nav.Server.dll" ] && \
    [ "$(cat "$SERVICE_STAMP_FILE" 2>/dev/null || true)" != "$SERVICE_STAMP" ]; then
     log_step "Service tier in the volume was built by a different platform/image — rebuilding it"
@@ -523,6 +528,27 @@ if [ -f /bc/tools/patcher/PatchNclTestPage.dll ]; then
     fi
     if $PATCHER types "$SERVICE_DIR/Microsoft.Dynamics.Nav.Types.dll" 2>&1 | tail -1; then
         log_step "Patched Nav.Types.dll (TestClientProxy Assembly.Load → LoadFrom)"
+    fi
+    # Text behaviour a Windows tier has and Linux does not (issue #113). Both are constants
+    # inside CoreLib's precompiled code, so no runtime hook can reach them; BC's own call
+    # sites are rewritten in the IL instead.
+    #   newline:  Environment.NewLine is CRLF (error texts, TextBuilder, XML, ...)
+    #   encoding: Encoding.GetEncoding(0), the ANSI code page, is windows-1252, not UTF-8
+    #   uri:      new Uri("/path") is a file URI here and an error on Windows (HTTP objects only)
+    #   culture:  ICU's narrow no-break space before AM/PM in time patterns is a plain space
+    # BC_WINDOWS_TEXT=0 leaves the assemblies as Microsoft shipped them.
+    if [ "${BC_WINDOWS_TEXT:-1}" = "1" ]; then
+        for TXT_ASM in Microsoft.Dynamics.Nav.Ncl Microsoft.Dynamics.Nav.Types; do
+            for TXT_PATCH in newline encoding uri culture; do
+                if $PATCHER $TXT_PATCH "$SERVICE_DIR/$TXT_ASM.dll" 2>&1 | tail -1; then
+                    log_step "Patched $TXT_ASM.dll ($TXT_PATCH, Windows text behaviour)"
+                fi
+            done
+        done
+        # JsonObject.WriteToYaml: YamlDotNet takes its line break from Environment.NewLine too.
+        if [ -f "$SERVICE_DIR/YamlDotNet.dll" ] && $PATCHER newline "$SERVICE_DIR/YamlDotNet.dll" 2>&1 | tail -1; then
+            log_step "Patched YamlDotNet.dll (newline, Windows text behaviour)"
+        fi
     fi
 fi
 

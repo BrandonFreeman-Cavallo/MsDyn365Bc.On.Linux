@@ -141,6 +141,10 @@ services:
       # fill. Set to 1 only if a TestPage scenario needs the dispatcher pump this image
       # doesn't implement and hangs with the default (Async=true, matching Windows).
       BC_TESTPAGE_ASYNC_PATCH: ${BC_TESTPAGE_ASYNC_PATCH:-}
+      # Windows text behaviour (issue #113): CRLF line breaks, windows-1252 as the ANSI code
+      # page, a plain space before AM/PM. 1 (default) rewrites BC's assemblies in Step 2b;
+      # 0 leaves them as Microsoft shipped them. Part of the service-volume stamp.
+      BC_WINDOWS_TEXT: ${BC_WINDOWS_TEXT:-}
       # ---- Mono RDLC renderer (issue #73) -----------------------------------
       # `mono` runs Microsoft's real reporting service under Mono with our
       # Pango/HarfBuzz font and text bridge, so Report.SaveAs(Pdf) against an
