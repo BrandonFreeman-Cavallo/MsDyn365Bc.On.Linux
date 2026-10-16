@@ -172,6 +172,45 @@ static class PatchNewline
         return m;
     }
 
+    /// <summary>
+    /// Exception.Message text built inside CoreLib ("...\nActual value was -1.") carries the framework's
+    /// LF. BC's MapNativeException methods copy it into the AL error text, so route it through
+    /// CrlfMessage(e) = e.Message with every line break as CR LF.
+    /// </summary>
+    static MethodDefinition AddCrlfMessageHelper(ModuleDefinition module)
+    {
+        var holder = module.Types.FirstOrDefault(t => t.Name == "<BcLinuxWindowsText>");
+        if (holder == null)
+        {
+            holder = new TypeDefinition("", "<BcLinuxWindowsText>",
+                TypeAttributes.Class | TypeAttributes.Sealed | TypeAttributes.Abstract | TypeAttributes.NotPublic,
+                module.TypeSystem.Object);
+            module.Types.Add(holder);
+        }
+        var existing = holder.Methods.FirstOrDefault(x => x.Name == "CrlfMessage");
+        if (existing != null) return existing;
+
+        var m = new MethodDefinition("CrlfMessage",
+            MethodAttributes.Static | MethodAttributes.Assembly | MethodAttributes.HideBySig,
+            module.TypeSystem.String);
+        m.Parameters.Add(new ParameterDefinition("e", ParameterAttributes.None, module.ImportReference(typeof(Exception))));
+        holder.Methods.Add(m);
+
+        var il = m.Body.GetILProcessor();
+        var getMessage = module.ImportReference(typeof(Exception).GetProperty("Message").GetMethod);
+        var replace = module.ImportReference(typeof(string).GetMethod("Replace", new[] { typeof(string), typeof(string) }));
+        il.Append(il.Create(OpCodes.Ldarg_0));
+        il.Append(il.Create(OpCodes.Callvirt, getMessage));
+        il.Append(il.Create(OpCodes.Ldstr, Crlf));
+        il.Append(il.Create(OpCodes.Ldstr, "\n"));
+        il.Append(il.Create(OpCodes.Callvirt, replace));
+        il.Append(il.Create(OpCodes.Ldstr, "\n"));
+        il.Append(il.Create(OpCodes.Ldstr, Crlf));
+        il.Append(il.Create(OpCodes.Callvirt, replace));
+        il.Append(il.Create(OpCodes.Ret));
+        return m;
+    }
+
     public static int Run(string inputPath, string outputPath)
     {
         if (!File.Exists(inputPath))
@@ -198,8 +237,10 @@ static class PatchNewline
             MethodReference xwsSetNewLineChars = null;
 
             MethodDefinition saveHelper = null;
+            int exMessages = 0;
             int newLines = 0, appendLines = 0, appendLineArgs = 0, writerSettings = 0, xdocSaves = 0, textWriters = 0, xmlTextWriters = 0;
             MethodReference setTextWriterNewLine = null;
+            MethodDefinition crlfMessage = null;
             MethodDefinition xmlTextWriterHelper = null;
 
             foreach (var type in module.GetTypes().ToList())
@@ -216,6 +257,18 @@ static class PatchNewline
                     {
                         if (ins.Operand is not MethodReference mr) continue;
                         var owner = mr.DeclaringType?.FullName;
+
+                        if (ins.OpCode.Code is Code.Callvirt or Code.Call
+                            && method.Name.StartsWith("MapNativeException") && mr.Name == "get_Message"
+                            && owner is "System.Exception" or "System.ArgumentException" or "System.ArgumentOutOfRangeException")
+                        {
+                            crlfMessage ??= AddCrlfMessageHelper(module);
+                            ins.OpCode = OpCodes.Call;
+                            ins.Operand = crlfMessage;
+                            exMessages++;
+                            changed = true;
+                            continue;
+                        }
 
                         if (ins.OpCode.Code == Code.Call
                             && owner == "System.Environment" && mr.Name == "get_NewLine")
@@ -321,9 +374,9 @@ static class PatchNewline
             }
 
             Console.WriteLine($"Rewrote {newLines} Environment.NewLine, {appendLines} AppendLine(), " +
-                              $"{appendLineArgs} AppendLine(string), {writerSettings} XmlWriterSettings, {xdocSaves} XDocument.Save(Stream), {textWriters} StreamWriter/StringWriter, {xmlTextWriters} XmlTextWriter in {Path.GetFileName(inputPath)}");
+                              $"{appendLineArgs} AppendLine(string), {writerSettings} XmlWriterSettings, {xdocSaves} XDocument.Save(Stream), {textWriters} StreamWriter/StringWriter, {xmlTextWriters} XmlTextWriter, {exMessages} MapNativeException messages in {Path.GetFileName(inputPath)}");
 
-            if (newLines + appendLines + appendLineArgs + writerSettings + xdocSaves + textWriters + xmlTextWriters == 0)
+            if (newLines + appendLines + appendLineArgs + writerSettings + xdocSaves + textWriters + xmlTextWriters + exMessages == 0)
                 return 0;
 
             if (inputPath == outputPath)
