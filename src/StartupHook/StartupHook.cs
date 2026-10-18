@@ -257,6 +257,24 @@ using System.Threading.Tasks;
 ///   runner class, so the websocket runner and a real tier are untouched.
 ///   NOT covered: the rest of 130453 (application areas, WorkDate, codeunits 130301/130302/
 ///   132553) is also skipped on the hub; the last error is the only part measured.
+/// Patch #35: NavFile.ALIsPathTemporary (Nav.Ncl.dll) — issue #122
+///   BC's IsPathTemporary is "ExpandFileName(enforceUserPath: true) did not throw". Patch #28
+///   stopped ExpandFileName enforcing the user folder, so every path came back temporary —
+///   "C:\x", "\\server\share\x" and "/" included, where a Windows tier says false.
+///   Fix: answer the original question directly. A path is temporary when it resolves inside
+///   the session's user folder ('\' read as '/', relative paths combined with the folder); a
+///   drive letter or a UNC path is rooted outside it, as on Windows. Empty is true, as
+///   before. The trapped call returns false; the untrapped one throws BC's own
+///   NavNCLInvalidPathException with Lang.FileAccessLimitedToUserFolder. #28 is unchanged.
+/// Patch #36: TestRunnerClientCallback file callbacks (Nav.Service.Dev.dll) — issue #122
+///   The hub's client callback says false to a download and to an import of a .navdata file.
+///   A Windows container's test run goes through the web server's client-services session,
+///   which hands the download to the caller (true, file name unchanged) and refuses the
+///   upload with NavNotSupportedFileDialogProviderException. Fix: DownloadFileAction returns
+///   true, ImportDataAction (behind Database.ImportData and DataFileInformation) throws that
+///   exception. The websocket runner's client answers the same way (tools/TestRunner,
+///   FileActionDialog); before that change it answered with a null result, which BC
+///   dereferenced (NullReferenceException in AL, and on BC 27 the session ended).
 /// Patch #19b: NavSession.InitReportingClientAsync (Nav.Ncl.dll) — BC 29, issue #109
 ///   BC 29 removed NavEnvironment.CustomReportingServiceClient (the factory Patch #19 replaced) and
 ///   kept only DecorateReportingServiceClient, which wraps a client InitReportingClientAsync has
@@ -513,6 +531,7 @@ internal class StartupHook
                 pollTimer.Dispose();
                 _devAssemblyPollTimer = null;
                 PatchNavAuthenticationChallenge(asm);
+                PatchTestRunnerClientCallback(asm);
             };
             pollTimer.AutoReset = true;
             pollTimer.Start();
@@ -760,6 +779,9 @@ internal class StartupHook
         if (name == "Microsoft.Dynamics.Nav.Ncl")
         {
             PatchNavFileExpandFileName(args.LoadedAssembly);
+            // Patch #35: #28 no longer enforces the user folder, and ALIsPathTemporary is
+            // built on that check — answer it here instead (issue #122).
+            PatchNavFileIsPathTemporary(args.LoadedAssembly);
         }
 
         // Patch #32: NavLicense.Dispose(bool) races an in-flight session's permission check
@@ -806,6 +828,7 @@ internal class StartupHook
         if (name == "Microsoft.Dynamics.Nav.Service.Dev")
         {
             PatchNavAuthenticationChallenge(args.LoadedAssembly);
+            PatchTestRunnerClientCallback(args.LoadedAssembly);
         }
 
     }
@@ -4221,6 +4244,132 @@ internal class StartupHook
     }
 
     // ========================================================================
+    // Patch #35: NavFile.ALIsPathTemporary — keep the user-folder check (issue #122)
+    // ========================================================================
+
+    private static ConstructorInfo? _invalidPathExceptionCtor;   // (string, params DiagnosticParameter[])
+    private static MethodInfo? _diagnosticParameterEuii;
+    private static PropertyInfo? _langFileAccessLimitedToUserFolder;
+
+    private static void PatchNavFileIsPathTemporary(Assembly navNcl)
+    {
+        if (IsPatchDisabled("35")) return;
+        try
+        {
+            var navFileType = navNcl.GetType("Microsoft.Dynamics.Nav.Runtime.NavFile");
+            MethodInfo? isTemp = null;
+            foreach (var m in navFileType?.GetMethods(BindingFlags.Static | BindingFlags.Public) ?? Array.Empty<MethodInfo>())
+            {
+                var p = m.GetParameters();
+                if (m.Name == "ALIsPathTemporary" && p.Length == 2
+                    && p[0].ParameterType.IsEnum && p[1].ParameterType == typeof(string))
+                {
+                    isTemp = m;
+                    break;
+                }
+            }
+            if (isTemp == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #35: NavFile.ALIsPathTemporary(DataError,string) not found — skipping");
+                return;
+            }
+
+            _sessionUserFolderProp ??= navNcl.GetType("Microsoft.Dynamics.Nav.Runtime.NavSession")
+                ?.GetProperty("UserFolder", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            _navCurrentThreadSessionProp ??= navNcl
+                .GetType("Microsoft.Dynamics.Nav.Runtime.NavCurrentThread")
+                ?.GetProperty("Session", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+            // The exception BC throws when a path leaves the user folder, resolved now so the
+            // replacement does no type lookups. Missing pieces only cost the error text: the
+            // trapped case (the one AL code checks) returns false without them.
+            var diagParamType = Type.GetType("Microsoft.Dynamics.Nav.Diagnostic.DiagnosticParameter, Microsoft.Dynamics.Nav.Types");
+            _diagnosticParameterEuii = diagParamType?.GetMethod("Euii", BindingFlags.Static | BindingFlags.Public,
+                null, new[] { typeof(object) }, null);
+            if (diagParamType != null)
+                _invalidPathExceptionCtor = Type.GetType("Microsoft.Dynamics.Nav.Types.Exceptions.NavNCLInvalidPathException, Microsoft.Dynamics.Nav.Types")
+                    ?.GetConstructor(new[] { typeof(string), diagParamType.MakeArrayType() });
+            _langFileAccessLimitedToUserFolder = Type.GetType("Microsoft.Dynamics.Nav.Common.Language.Lang, Microsoft.Dynamics.Nav.Language")
+                ?.GetProperty("FileAccessLimitedToUserFolder", BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic);
+
+            var replacement = typeof(StartupHook).GetMethod(
+                nameof(Replacement_NavFileIsPathTemporary),
+                BindingFlags.Static | BindingFlags.NonPublic)!;
+            ApplyJmpHook(isTemp, replacement, "NavFile.ALIsPathTemporary (Patch #35)");
+            Console.WriteLine("[StartupHook] Patch #35: NavFile.ALIsPathTemporary user-folder check active");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #35 failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Replacement for static NavFile.ALIsPathTemporary(DataError errorLevel, string filePath).
+    /// The original is "ExpandFileName(ThrowError, filePath, enforceUserPath: true) did not
+    /// throw". Patch #28 stopped ExpandFileName from enforcing the user folder, so every path
+    /// came back temporary. This answers the question the original asked, with Linux path
+    /// rules plus the Windows forms AL code still uses: a drive letter ("C:\", "Z:/") or a UNC
+    /// path ("\\server\share") is rooted outside the user folder, as it is on Windows.
+    /// DataError is an int-backed enum (TrapError = 0, ThrowError = 1).
+    /// </summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool Replacement_NavFileIsPathTemporary(int errorLevel, string filePath)
+    {
+        // ExpandFileName returns an empty name unchanged, so the original says true.
+        if (string.IsNullOrEmpty(filePath)) return true;
+
+        string fullPath = filePath;
+        bool inside;
+        try
+        {
+            var session = _navCurrentThreadSessionProp?.GetValue(null);
+            var userFolder = session != null ? _sessionUserFolderProp?.GetValue(session) as string : null;
+            if (string.IsNullOrEmpty(userFolder)) return true;
+            userFolder = System.IO.Path.GetFullPath(userFolder.Replace('\\', '/'));
+
+            bool windowsRooted = filePath.Length >= 2
+                && ((char.IsAsciiLetter(filePath[0]) && filePath[1] == ':')
+                    || ((filePath[0] == '\\' || filePath[0] == '/') && (filePath[1] == '\\' || filePath[1] == '/')));
+            if (windowsRooted)
+            {
+                inside = false;
+            }
+            else
+            {
+                fullPath = filePath.Replace('\\', '/');
+                if (!System.IO.Path.IsPathRooted(fullPath))
+                    fullPath = System.IO.Path.Combine(userFolder, fullPath);
+                fullPath = System.IO.Path.GetFullPath(fullPath);
+                inside = fullPath.StartsWith(userFolder, StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        catch
+        {
+            // An invalid path is not this patch's question; keep the pre-patch answer.
+            return true;
+        }
+
+        if (inside) return true;
+        if (errorLevel == 0) return false;
+
+        Exception? ex = null;
+        try
+        {
+            var message = _langFileAccessLimitedToUserFolder?.GetValue(null) as string;
+            if (message != null && _invalidPathExceptionCtor != null && _diagnosticParameterEuii != null)
+            {
+                var args = Array.CreateInstance(_diagnosticParameterEuii.ReturnType, 1);
+                args.SetValue(_diagnosticParameterEuii.Invoke(null, new object[] { fullPath }), 0);
+                ex = _invalidPathExceptionCtor.Invoke(new object[] { message, args }) as Exception;
+            }
+        }
+        catch { }
+        throw ex ?? new UnauthorizedAccessException(
+            $"Files outside of the current user's folder cannot be accessed. Access is denied to file '{fullPath}'.");
+    }
+
+    // ========================================================================
     // JMP Hook Infrastructure
     // ========================================================================
 
@@ -4799,6 +4948,73 @@ internal class StartupHook
             handler.DynamicInvoke(self, info);
         }
         return new ValueTask<bool>(true);
+    }
+
+    // ========================================================================
+    // Patch #36: TestRunnerClientCallback file callbacks (Microsoft.Dynamics.Nav.Service.Dev)
+    // ------------------------------------------------------------------------
+    // The hub's client callback answers every file dialog with "nothing happened": a
+    // download returns false, an import returns false. A Windows container's test run goes
+    // through the web server's client-services session instead, which hands a download to
+    // the caller as a link (true, file name unchanged) and refuses an upload with
+    // NavNotSupportedFileDialogProviderException. The websocket runner's client gives the
+    // same answers (tools/TestRunner, FileActionDialog). Only the hub's runner class is
+    // touched; a real client session still goes through NSClientCallback. Issue #122.
+    // ========================================================================
+    private static Type? _notSupportedFileDialogExceptionType;
+
+    private static void PatchTestRunnerClientCallback(Assembly serviceDev)
+    {
+        if (IsPatchDisabled("36")) return;
+        try
+        {
+            var callback = serviceDev.GetType("Microsoft.Dynamics.Nav.Service.Dev.TestExecution.TestRunnerClientCallback");
+            if (callback == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #36: TestRunnerClientCallback not found — skipping (no TestRunnerHub in this build)");
+                return;
+            }
+            _notSupportedFileDialogExceptionType = Type.GetType(
+                "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException, Microsoft.Dynamics.Nav.Types");
+
+            const BindingFlags all = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            var download = callback.GetMethods(all).FirstOrDefault(m => m.Name == "DownloadFileAction"
+                && m.ReturnType == typeof(bool) && m.GetParameters().Length == 7);
+            var import = callback.GetMethods(all).FirstOrDefault(m => m.Name == "ImportDataAction"
+                && m.ReturnType == typeof(bool) && m.GetParameters().Length == 3);
+            if (download == null || import == null || _notSupportedFileDialogExceptionType == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #36: TestRunnerClientCallback shape changed — skipping");
+                return;
+            }
+
+            ApplyJmpHook(download, typeof(StartupHook).GetMethod(nameof(Replacement_TestRunnerDownloadFileAction),
+                BindingFlags.Static | BindingFlags.NonPublic)!, "TestRunnerClientCallback.DownloadFileAction (Patch #36)");
+            ApplyJmpHook(import, typeof(StartupHook).GetMethod(nameof(Replacement_TestRunnerImportDataAction),
+                BindingFlags.Static | BindingFlags.NonPublic)!, "TestRunnerClientCallback.ImportDataAction (Patch #36)");
+            Console.WriteLine("[StartupHook] Patch #36: TestRunnerClientCallback download/import answer as a Windows test client");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #36 failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool Replacement_TestRunnerDownloadFileAction(object self, System.IO.Stream stream, bool displayDialog,
+        string title, string initialFolder, string typeFilter, ref string fileName, Guid automationId)
+    {
+        return true;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool Replacement_TestRunnerImportDataAction(object self, ref string fileName, string dialogTitle, bool showDialog)
+    {
+        // On Windows the client's exception crosses the wire, and the server rethrows a clone
+        // that wraps it (ExceptionHandler.WrapOriginalException). That nesting is what makes
+        // the AL error code "NotSupportedFileDialogProvider:NotSupportedFileDialogProvider".
+        var inner = (Exception)Activator.CreateInstance(_notSupportedFileDialogExceptionType!)!;
+        throw (Exception)Activator.CreateInstance(_notSupportedFileDialogExceptionType!, inner.Message, inner)!;
     }
 
     // ========================================================================

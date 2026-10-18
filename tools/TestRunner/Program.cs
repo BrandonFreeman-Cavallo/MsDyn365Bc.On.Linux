@@ -704,7 +704,19 @@ class Callbacks
     [JsonRpcMethod("OnSessionTerminating")]
     public Task OnSessionTerminating() { _sessionEndedCts.Cancel(); return Task.CompletedTask; }
 
-    [JsonRpcMethod("Confirm")] public async Task Confirm(JToken r) => await AckCallback("Confirm");
+    // A Confirm that reaches the client (no handler took it, e.g. the "Your change might
+    // update related records" question when a TestPage renames its record) is answered with
+    // the request's default, as the hub's TestRunnerClientCallback does. NSClientCallback
+    // unboxes the result to bool, so the generic null ack was a NullReferenceException in AL,
+    // and on BC 27 it ended the session (issue #122). The Result goes through BC's
+    // ObjectWithTypeInfoConverter: {typeHint, value}, with 19 = JsonTypeHint.Bool.
+    [JsonRpcMethod("Confirm")] public async Task Confirm(JToken r)
+    {
+        var request = r.Type == JTokenType.Array ? r.First : r;
+        bool defaultValue = request?["DefaultValue"]?.Type == JTokenType.Boolean && request["DefaultValue"]!.Value<bool>();
+        if (Rpc != null)
+            try { await Rpc.InvokeAsync("EndClientCall", new object?[] { new JObject { ["Result"] = new JObject { ["typeHint"] = 19, ["value"] = defaultValue } } }); } catch { }
+    }
     [JsonRpcMethod("ProcessServerRequests")] public async Task ProcessServerRequests(JToken r) => await AckCallback("ProcessServerRequests");
     [JsonRpcMethod("FormRunModal")] public async Task FormRunModal(JToken r) => await AckCallback("FormRunModal");
     [JsonRpcMethod("FormClose")] public async Task FormClose(JToken r) => await AckCallback("FormClose");
@@ -716,7 +728,83 @@ class Callbacks
         if (Rpc != null)
             try { await Rpc.InvokeAsync("EndClientCall", new object?[] { 1 }); } catch { }
     }
-    [JsonRpcMethod("FileActionDialog")] public async Task FileActionDialog(JToken r) => await AckCallback("FileActionDialog");
+    [JsonRpcMethod("FileActionDialog")] public async Task FileActionDialog(JToken r)
+    {
+        // Answer the way the client of a Windows container's test run does (issue #122).
+        // That client is the web server's client-services session, whose file dialog
+        // provider hands a download to the caller as a link and refuses an upload. So
+        // File.Download / DownloadFromStream return true and leave ToFile as it was, and
+        // Database.ImportData / DataFileInformation raise NotSupportedFileDialogProvider.
+        // The generic ack below answers with a null result, which NSClientCallback casts
+        // to FileActionResponse and dereferences: a NullReferenceException in AL.
+        var action = FileActionOf(r);
+        if (Rpc != null && action == FileActionDownload)
+        {
+            var response = new JObject { ["FileActionRequest"] = r.DeepClone(), ["IsFileAccessed"] = true };
+            try { await Rpc.InvokeAsync("EndClientFileActionCall", new object?[] { response }); } catch { }
+            return;
+        }
+        if (Rpc != null && action == FileActionUpload)
+        {
+            try { await Rpc.InvokeAsync("SendClientException", new object?[] { NotSupportedFileDialogFault(), NotSupportedFileDialogMessage }); } catch { }
+            return;
+        }
+        await AckCallback("FileActionDialog");
+    }
+
+    // Microsoft.Dynamics.Nav.Types.FileAction
+    private const int FileActionUpload = 1;
+    private const int FileActionDownload = 2;
+
+    private static int FileActionOf(JToken r)
+    {
+        var request = r.Type == JTokenType.Array ? r.First : r;
+        var action = request?["Action"];
+        if (action == null) return -1;
+        if (action.Type == JTokenType.Integer) return action.Value<int>();
+        return action.ToString() switch { "Upload" => FileActionUpload, "Download" => FileActionDownload, _ => -1 };
+    }
+
+    // Lang.NavFileOperationsNotSupported, the message of NavNotSupportedFileDialogProviderException.
+    private const string NotSupportedFileDialogMessage =
+        "The operation cannot complete because it uses a feature that is not supported (AL File function.)";
+
+    // A ServerFault carrying NavNotSupportedFileDialogProviderException, in the form
+    // ExceptionHandler.DeserializeFromByteArray reads: base64 of a JSON array of exceptions,
+    // each serialized through ISerializable with its $type. The server rethrows it as the
+    // original exception, so AL sees the same text and error code as on Windows.
+    private static JObject NotSupportedFileDialogFault()
+    {
+        var exception = new JObject
+        {
+            ["$type"] = "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException, Microsoft.Dynamics.Nav.Types",
+            ["SuppressMessage"] = false,
+            ["FatalityScope"] = 0,
+            ["errorLevel"] = 0,
+            ["DiagnosticsSuppress"] = false,
+            ["DiagnosticsMessage"] = null,
+            ["TransientDiagnosticsMessage"] = null,
+            ["SuppressExceptionCreatedEvent"] = false,
+            ["ALCallStack"] = null,
+            ["detailedErrorMessage"] = null,
+            ["EnglishLanguageDiagnosticsMessage"] = null,
+            ["UntrappableError"] = false,
+            ["ClassName"] = "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException",
+            ["Message"] = NotSupportedFileDialogMessage,
+            ["Data"] = null,
+            ["InnerException"] = null,
+            ["HelpURL"] = null,
+            ["StackTraceString"] = null,
+            ["RemoteStackTraceString"] = null,
+            ["RemoteStackIndex"] = 0,
+            ["ExceptionMethod"] = null,
+            ["HResult"] = -2146233067,
+            ["Source"] = null,
+            ["WatsonBuckets"] = null,
+        };
+        var data = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes(new JArray(exception).ToString(Newtonsoft.Json.Formatting.None)));
+        return new JObject { ["exceptionData"] = data, ["responseQueue"] = null };
+    }
     [JsonRpcMethod("FeedbackRequested")] public async Task FeedbackRequested(JToken r) => await AckCallback("FeedbackRequested");
     [JsonRpcMethod("CreateDotNetHandle")] public async Task CreateDotNetHandle(JToken r) => await AckCallback("CreateDotNetHandle");
     [JsonRpcMethod("GetDotNetObject")] public async Task GetDotNetObject(JToken r) => await AckCallback("GetDotNetObject");
