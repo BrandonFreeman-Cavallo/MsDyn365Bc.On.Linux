@@ -180,6 +180,26 @@ on:
         required: false
         type: string
         default: ""
+      assembly_probing_paths:
+        description: >-
+          Newline-separated folders passed to the compiler as
+          /assemblyprobingpaths for every app it compiles, so an OnPrem app
+          can declare a DotNet assembly that ships in the BC artifact
+          (issue #123). app.json's assemblyProbingPaths is no help here:
+          recent compilers refuse it (AL0124). A relative entry is resolved
+          against the job's extracted artifact folder, so one setting works
+          for every BC version; an absolute entry is used as is. Shell globs
+          are expanded, which covers the version-numbered service folder.
+          The compiler searches each folder's subfolders too. An entry that
+          matches no folder fails the step. Example:
+            platform/Test Assemblies
+            platform/ServiceTier/PFiles64/Microsoft Dynamics NAV/*/Service
+          The first holds Newtonsoft.Json; the second holds
+          Microsoft.Dynamics.Nav.NavUserAccount and the Timer, NavEtwReceiver
+          and ClientExtensions add-ins. Empty = no flag passed.
+        required: false
+        type: string
+        default: ""
       runtime_version:
         description: >-
           Opt-in rewrite of app.json "runtime" before compile. Blank
@@ -941,6 +961,7 @@ jobs:
           ENABLE_EXTERNAL_RULESETS: ${{ inputs.enable_external_rulesets }}
           ENABLE_CODE_ANALYZERS_ON_TEST_APPS: ${{ inputs.enable_code_analyzers_on_test_apps }}
           PREPROCESSOR_SYMBOLS: ${{ inputs.preprocessor_symbols }}
+          ASSEMBLY_PROBING_PATHS: ${{ inputs.assembly_probing_paths }}
         run: |
           set -e
           bash bc-linux/scripts/workflow-summary.sh begin COMPILE "Compile AL apps"
@@ -999,6 +1020,39 @@ jobs:
 
           PP_FLAG=()
           [ -n "$PREPROCESSOR_SYMBOLS" ] && PP_FLAG=("/define:$PREPROCESSOR_SYMBOLS")
+
+          # Resolve each probing-path entry to existing folders and join them
+          # with ';' into one flag. An entry that matches nothing fails here:
+          # the compiler would only report AL0451 for the assembly, with no
+          # hint that the folder was wrong.
+          if [ -n "$ASSEMBLY_PROBING_PATHS" ]; then
+            PROBE_DIRS=()
+            while IFS= read -r entry; do
+              entry="${entry%$'\r'}"
+              [ -z "${entry//[[:space:]]/}" ] && continue
+              case "$entry" in
+                /*) pattern="$entry" ;;
+                *)  pattern="$BC_ARTIFACTS_DIR/$entry" ;;
+              esac
+              # Unquoted so the glob expands; IFS= so the spaces in
+              # "Test Assemblies" and "Microsoft Dynamics NAV" do not split it.
+              matched=0
+              mapfile -t candidates < <(IFS=; shopt -s nullglob; m=($pattern); [ ${#m[@]} -gt 0 ] && printf '%s\n' "${m[@]}")
+              for dir in "${candidates[@]}"; do
+                [ -d "$dir" ] || continue
+                PROBE_DIRS+=("$dir")
+                matched=1
+              done
+              if [ "$matched" -eq 0 ]; then
+                echo "ERROR: assembly_probing_paths entry '$entry' matches no folder (looked for '$pattern')" >&2
+                exit 1
+              fi
+            done <<< "$ASSEMBLY_PROBING_PATHS"
+            PROBE_JOINED=$(IFS=';'; echo "${PROBE_DIRS[*]}")
+            PP_FLAG+=("/assemblyprobingpaths:$PROBE_JOINED")
+            echo "Assembly probing paths:"
+            printf '  %s\n' "${PROBE_DIRS[@]}"
+          fi
 
           compile_dir() {
             local src="$1"
