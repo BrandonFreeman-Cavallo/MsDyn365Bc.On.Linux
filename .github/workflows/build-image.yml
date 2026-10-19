@@ -58,3 +58,20 @@ jobs:
         # so it caches to type=gha instead.
         cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
         cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache,mode=max
+
+    - name: Build and push the RDLC variant (BC_WITH_RDLC=1)
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        file: src/Dockerfile
+        push: true
+        build-args: BC_WITH_RDLC=1
+        tags: |
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rdlc
+          ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rdlc-${{ github.sha }}
+        # Its own cache ref, so the Mono stage is not reinstalled on every
+        # push. Reads the default cache too, for the layers both builds share.
+        cache-from: |
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache-rdlc
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache-rdlc,mode=max
