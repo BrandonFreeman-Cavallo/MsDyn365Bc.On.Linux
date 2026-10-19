@@ -1497,6 +1497,10 @@ exec 3>/tmp/bc-stdin
 
     INSTANCE=$(grep -oP 'ServerInstance" value="\K[^"]+' $SERVICE_DIR/CustomSettings.config 2>/dev/null || echo "BC")
     DEV_URL="http://localhost:7049"
+    # How long each dev-endpoint publish below may take. These were 120s and
+    # 300s, and a publish on BC 29.0 has taken 2:28. Same variable and default
+    # as scripts/publish-app.sh.
+    PUBLISH_TIMEOUT="${BC_PUBLISH_TIMEOUT:-600}"
     NST_WAIT_START=$(date +%s)
 
     echo "[entrypoint] [$(( $(date +%s) - ENTRYPOINT_START ))s] Waiting for BC to start..."
@@ -1676,7 +1680,7 @@ PYEOF
                     continue
                 fi
 
-                HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 300 \
+                HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time "$PUBLISH_TIMEOUT" \
                     -u "$BC_SERVER_USERNAME:$BC_SERVER_PASSWORD" -X POST \
                     -F "file=@$APP_FILE;type=application/octet-stream" \
                     "$DEV_URL/apps?SchemaUpdateMode=forcesync" 2>/dev/null)
@@ -1780,7 +1784,7 @@ PYEOF
                 # the only valid values, none of which auto-install missing
                 # tenant deps), so we have to wipe stuck-published apps in
                 # SQL beforehand instead.
-                HTTP=$(curl -s -o /tmp/install-tenant.out -w "%{http_code}" --max-time 120 \
+                HTTP=$(curl -s -o /tmp/install-tenant.out -w "%{http_code}" --max-time "$PUBLISH_TIMEOUT" \
                     -u "$BC_SERVER_USERNAME:$BC_SERVER_PASSWORD" -X POST \
                     -F "file=@$APP_PATH;type=application/octet-stream" \
                     "$DEV_URL/apps?SchemaUpdateMode=synchronize" 2>/dev/null)
@@ -1845,7 +1849,7 @@ PYEOF
             while IFS= read -r APP_PATH; do
                 [ -z "$APP_PATH" ] && continue
                 NAME=$(basename "$APP_PATH")
-                HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 120 \
+                HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time "$PUBLISH_TIMEOUT" \
                     -u "$BC_SERVER_USERNAME:$BC_SERVER_PASSWORD" -X POST \
                     -F "file=@$APP_PATH;type=application/octet-stream" \
                     "$DEV_URL/apps?SchemaUpdateMode=synchronize" 2>/dev/null)
