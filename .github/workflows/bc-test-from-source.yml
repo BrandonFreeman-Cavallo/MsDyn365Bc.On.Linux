@@ -365,6 +365,14 @@ on:
         required: false
         type: string
         default: ""
+      rdlc_renderer:
+        description: >-
+          Turn on the opt-in Mono RDLC renderer (issue #73): sets BC_RDLC_RENDERER=mono and
+          BC_RDLC_TRUST_LAYOUTS=1 for the bc container and pulls the bc-runner:rdlc image
+          (built with BC_WITH_RDLC=1) unless runner_image is set. Only for trusted layouts.
+        required: false
+        type: boolean
+        default: false
       bc_linux_ref:
         description: "Git ref of StefanMaron/MsDyn365Bc.On.Linux to check out for scripts (master, a tag, or a commit SHA)"
         required: false
@@ -508,7 +516,9 @@ jobs:
     # can't live on the calling job.
     continue-on-error: ${{ inputs.continue_on_error }}
     env:
-      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && 'ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner:rdlc') || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+      BC_RDLC_RENDERER: ${{ inputs.rdlc_renderer && 'mono' || '' }}
+      BC_RDLC_TRUST_LAYOUTS: ${{ inputs.rdlc_renderer && '1' || '' }}
       # Blank passes through to docker-compose's `${BC_SQL_IMAGE:-<mirror>}`
       # default — `:-` treats empty and unset alike, so an unset input keeps
       # the mirror rather than resolving to an empty image name.
@@ -565,7 +575,7 @@ jobs:
       # ⇒ ~50s instead of ~80s sequential).
       - name: Download BC artifacts + pull docker images (parallel)
         env:
-          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && 'ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner:rdlc') || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
         run: |
           set -e
           bash bc-linux/scripts/workflow-summary.sh begin DOWNLOAD "Download BC artifacts + pull docker images"
