@@ -600,12 +600,16 @@ async Task<(JsonRpc, ClientWebSocket, CancellationTokenSource)> ConnectOnce(
         rpc = new JsonRpc(new WebSocketMessageHandler(ws));
         rpc.TraceSource.Switch.Level = System.Diagnostics.SourceLevels.Verbose;
         rpc.TraceSource.Listeners.Add(tc);
-        var callbacks = new Callbacks(sessionEndedCts);
+        var callbacks = new Callbacks(sessionEndedCts) { DownloadBaseUrl = $"http://{host}/", AuthBytes = authBytes };
         rpc.AddLocalRpcTarget(callbacks);
         callbacks.Rpc = rpc;
         rpc.StartListening();
-        await rpc.InvokeWithCancellationAsync<JToken>("OpenConnection",
+        // The result is the session's UserSettings; its TenantId and ServerExternalSessionId
+        // are what the client-services HTTP endpoints identify the session by.
+        var userSettings = await rpc.InvokeWithCancellationAsync<JToken>("OpenConnection",
             new object[] { new { LCID = 1033, DefaultLCID = 1033, TimeZoneId = "UTC", ClientConnectionType = 115, Credentials = new { UserName = user, Password = clientServicesPassword } } }, ct);
+        callbacks.TenantId = userSettings?["TenantId"]?.ToString();
+        callbacks.ServerExternalSessionId = userSettings?["ServerExternalSessionId"]?.ToString();
         Log("Connected.");
         return (rpc, ws, sessionEndedCts);
     }
@@ -677,6 +681,10 @@ class Callbacks
 {
     private readonly CancellationTokenSource _sessionEndedCts;
     public JsonRpc? Rpc { get; set; }
+    public string DownloadBaseUrl { get; set; } = "";
+    public byte[] AuthBytes { get; set; } = Array.Empty<byte>();
+    public string? TenantId { get; set; }
+    public string? ServerExternalSessionId { get; set; }
 
     public Callbacks(CancellationTokenSource sessionEndedCts) => _sessionEndedCts = sessionEndedCts;
 
@@ -742,6 +750,7 @@ class Callbacks
         var action = FileActionOf(r);
         if (Rpc != null && action == FileActionDownload)
         {
+            await DrainDownloadStream();
             var response = new JObject { ["FileActionRequest"] = r.DeepClone(), ["IsFileAccessed"] = true };
             try { await Rpc.InvokeAsync("EndClientFileActionCall", new object?[] { response }); } catch { }
             return;
@@ -752,6 +761,39 @@ class Callbacks
             return;
         }
         await AckCallback("FileActionDialog");
+    }
+
+    // A download hands the client a stream (Connection.DownloadStream) that it fetches from
+    // uploadDownload/download, as Microsoft's UploadDownloadClient does (it adds the instance
+    // and a client/ prefix; both routes reach the same controller). For a file that
+    // is only bookkeeping, but Database.ExportData writes its export on a background thread into
+    // a pipe that blocks until someone reads it: accepting the download without reading made
+    // every ExportData wait for the pipe's 60-second timeout and fail with an uncatchable
+    // TimeoutException (issue #125). The bytes are discarded; the test client has no file system
+    // the AL code could look at, which is also why ToFile stays as it was.
+    private async Task DrainDownloadStream()
+    {
+        if (string.IsNullOrEmpty(ServerExternalSessionId)) return;
+        try
+        {
+            using var http = new HttpClient { Timeout = TimeSpan.FromMinutes(5) };
+            using var request = new HttpRequestMessage(HttpMethod.Get, DownloadBaseUrl + "uploadDownload/download");
+            request.Headers.Authorization = new AuthenticationHeaderValue("Basic", Convert.ToBase64String(AuthBytes));
+            request.Headers.Add("server-tenant-id", TenantId ?? "default");
+            request.Headers.Add("server-session-id", ServerExternalSessionId);
+            using var response = await http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            if (!response.IsSuccessStatusCode)
+            {
+                Console.Error.WriteLine($"[testrunner] download stream: HTTP {(int)response.StatusCode}");
+                return;
+            }
+            await using var body = await response.Content.ReadAsStreamAsync();
+            await body.CopyToAsync(System.IO.Stream.Null);
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[testrunner] download stream: {ex.GetType().Name}: {ex.Message}");
+        }
     }
 
     // Microsoft.Dynamics.Nav.Types.FileAction

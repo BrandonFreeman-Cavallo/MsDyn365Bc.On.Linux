@@ -50,4 +50,24 @@ codeunit 70012 "BC Linux File Dialog Tests"
         LibraryAssert.ExpectedError('The operation cannot complete because it uses a feature that is not supported (AL File function.)');
         LibraryAssert.AreEqual('NotSupportedFileDialogProvider:NotSupportedFileDialogProvider', GetLastErrorCode(), 'error code');
     end;
+
+    // Issue #125: ExportData writes its export on a background thread into a pipe that blocks
+    // until the client reads the download. Accepting the download without reading it made
+    // every ExportData wait for the pipe's 60-second timeout and end in an uncatchable
+    // TimeoutException. The runner now reads the stream, as Microsoft's client does.
+    [Test]
+    procedure ExportDataDoesNotWaitForATimeout()
+    var
+        Started: DateTime;
+    begin
+        Started := CurrentDateTime();
+        if TryExportGlobalData(TemporaryPath() + 'bclinux-export.navdata') then;
+        LibraryAssert.IsTrue(CurrentDateTime() - Started < 30000, 'ExportData took 30 s or more');
+    end;
+
+    [TryFunction]
+    local procedure TryExportGlobalData(FileName: Text)
+    begin
+        Database.ExportData(false, FileName, 'bc-linux smoke test', false, false, true);
+    end;
 }
