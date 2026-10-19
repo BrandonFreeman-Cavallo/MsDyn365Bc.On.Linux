@@ -367,9 +367,19 @@ on:
         default: ""
       rdlc_renderer:
         description: >-
-          Turn on the opt-in Mono RDLC renderer (issue #73): sets BC_RDLC_RENDERER=mono and
-          BC_RDLC_TRUST_LAYOUTS=1 for the bc container and pulls the bc-runner:rdlc image
-          (built with BC_WITH_RDLC=1) unless runner_image is set. Only for trusted layouts.
+          Turn on the opt-in Mono RDLC renderer (issue #73): sets BC_RDLC_RENDERER=mono for
+          the bc container and pulls the bc-runner:rdlc image (built with BC_WITH_RDLC=1)
+          unless runner_image is set. Needs rdlc_trust_layouts: true as well, or the job
+          fails.
+        required: false
+        type: boolean
+        default: false
+      rdlc_trust_layouts:
+        description: >-
+          Required with rdlc_renderer: true. The acknowledgement that the VB code in an
+          RDLC layout runs with the renderer's privileges (root in the bc container), since
+          Mono does not sandbox it. Sets BC_RDLC_TRUST_LAYOUTS=1. Kept as a separate input
+          on purpose, so turning on the renderer is never also the acknowledgement.
         required: false
         type: boolean
         default: false
@@ -516,9 +526,9 @@ jobs:
     # can't live on the calling job.
     continue-on-error: ${{ inputs.continue_on_error }}
     env:
-      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && 'ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner:rdlc') || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'stefanmaron/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
       BC_RDLC_RENDERER: ${{ inputs.rdlc_renderer && 'mono' || '' }}
-      BC_RDLC_TRUST_LAYOUTS: ${{ inputs.rdlc_renderer && '1' || '' }}
+      BC_RDLC_TRUST_LAYOUTS: ${{ inputs.rdlc_renderer && inputs.rdlc_trust_layouts && '1' || '' }}
       # Blank passes through to docker-compose's `${BC_SQL_IMAGE:-<mirror>}`
       # default — `:-` treats empty and unset alike, so an unset input keeps
       # the mirror rather than resolving to an empty image name.
@@ -573,9 +583,15 @@ jobs:
       # operations on different hosts. Run them in parallel inside one
       # shell step to overlap their wall time (~50s artifacts ⊕ ~30s pull
       # ⇒ ~50s instead of ~80s sequential).
+      - name: Check the RDLC trust acknowledgement
+        if: ${{ inputs.rdlc_renderer && !inputs.rdlc_trust_layouts }}
+        run: |
+          echo "::error::rdlc_renderer: true also needs rdlc_trust_layouts: true. RDLC layout code runs unsandboxed as root in the bc container (see CLAUDE.md, RDLC rendering)."
+          exit 1
+
       - name: Download BC artifacts + pull docker images (parallel)
         env:
-          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && 'ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner:rdlc') || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'stefanmaron/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
         run: |
           set -e
           bash bc-linux/scripts/workflow-summary.sh begin DOWNLOAD "Download BC artifacts + pull docker images"

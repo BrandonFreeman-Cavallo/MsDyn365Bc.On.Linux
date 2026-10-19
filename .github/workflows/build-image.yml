@@ -69,4 +69,9 @@ jobs:
         tags: |
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rdlc
           ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:rdlc-${{ github.sha }}
-        cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+        # Its own cache ref, so the Mono stage is not reinstalled on every
+        # push. Reads the default cache too, for the layers both builds share.
+        cache-from: |
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache-rdlc
+          type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache
+        cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:cache-rdlc,mode=max
