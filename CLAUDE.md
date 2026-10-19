@@ -132,7 +132,7 @@ docker compose build bc && docker compose up -d --wait
 ### Known limitations (see `KNOWN-LIMITATIONS.md`)
 
 - ~142 test failures from "User cannot be deleted because logged on" — Microsoft test cleanup deletes the session user; only fixable by patching the platform "user is logged on" check.
-- ~29+ failures from `NSClientCallback.CreateDotNetHandle` NullRef on tests that need a UI session (Camera, Barcode, etc.).
+- ~~~29+ failures from `NSClientCallback.CreateDotNetHandle` NullRef on tests that need a UI session (Camera, Barcode, etc.).~~ Fixed (issue #125): both test runners' clients answered `CreateDotNetHandle` with null. They now answer as the web server's `ObservingAutomationHandler` does — a handle for a client extension type, `IsAvailable` false — in `tools/TestRunner` and Patch #37.
 - Bucket 4 sequential test run previously crashed the container after Tests-Misc due to infinite recursion in Microsoft's `OfficeWordDocumentPictureMerger.ReplaceMissingImageWithTransparentImage` (stack overflow in `Nav.OpenXml`, triggered by `TestSendToEMailAndPDFVendor`). **Fixed by Patch #23** — `ReplaceMissingImageWithTransparentImage` is no-op'd via JMP hook so missing images are left in place and the session survives.
 
 - Platform-table captions (All Profile, User, Company, …) came back in Traditional Chinese inside English error messages (issue #52). Not a session-language problem: on Linux/ICU `CultureInfo.GetCultures` never yields plain `zh-TW`, so BC's `LanguageHelper` had no "CHT" entry and the CaptionML parser filed the Chinese text under the English LCID, first in line. **Fixed by Patch #31** (rebuilds the abbreviation table with the ICU-hidden cultures); `extensions/smoke-test` carries a regression guard. Details in `KNOWN-LIMITATIONS.md`.
