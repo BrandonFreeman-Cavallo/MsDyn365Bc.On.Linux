@@ -275,6 +275,15 @@ using System.Threading.Tasks;
 ///   exception. The websocket runner's client answers the same way (tools/TestRunner,
 ///   FileActionDialog); before that change it answered with a null result, which BC
 ///   dereferenced (NullReferenceException in AL, and on BC 27 the session ended).
+/// Patch #37: TestRunnerClientCallback RunOnClient DotNet (Nav.Service.Dev.dll) — issue #125
+///   The hub's client callback answers CreateDotNetHandle and InvokeAutomationMethod with
+///   null. A page whose trigger asks "UserTours.IsAvailable()" (the Business Manager Role
+///   Center's "O365 Activities" part, PageNotifier, CameraProvider ...) then dereferences the
+///   null handle. A Windows test run's client is the web server's ObservingAutomationHandler:
+///   it hands out a handle for a known client extension type when no instance is asked for,
+///   says false to the static IsAvailable (no browser, so no extension), and refuses anything
+///   else with NavDotNetFromAlNotSupportedException. Fix: the same answers. The websocket
+///   runner's client gives them too (tools/TestRunner, CreateDotNetHandle).
 /// Patch #19b: NavSession.InitReportingClientAsync (Nav.Ncl.dll) — BC 29, issue #109
 ///   BC 29 removed NavEnvironment.CustomReportingServiceClient (the factory Patch #19 replaced) and
 ///   kept only DecorateReportingServiceClient, which wraps a client InitReportingClientAsync has
@@ -532,6 +541,7 @@ internal class StartupHook
                 _devAssemblyPollTimer = null;
                 PatchNavAuthenticationChallenge(asm);
                 PatchTestRunnerClientCallback(asm);
+                PatchTestRunnerClientCallbackDotNet(asm);
             };
             pollTimer.AutoReset = true;
             pollTimer.Start();
@@ -829,6 +839,7 @@ internal class StartupHook
         {
             PatchNavAuthenticationChallenge(args.LoadedAssembly);
             PatchTestRunnerClientCallback(args.LoadedAssembly);
+            PatchTestRunnerClientCallbackDotNet(args.LoadedAssembly);
         }
 
     }
@@ -5015,6 +5026,100 @@ internal class StartupHook
         // the AL error code "NotSupportedFileDialogProvider:NotSupportedFileDialogProvider".
         var inner = (Exception)Activator.CreateInstance(_notSupportedFileDialogExceptionType!)!;
         throw (Exception)Activator.CreateInstance(_notSupportedFileDialogExceptionType!, inner.Message, inner)!;
+    }
+
+    // ========================================================================
+    // Patch #37: TestRunnerClientCallback RunOnClient DotNet (Microsoft.Dynamics.Nav.Service.Dev)
+    // ------------------------------------------------------------------------
+    // CreateDotNetHandle and InvokeAutomationMethod both return null on the hub, so the
+    // first RunOnClient DotNet a page touches dereferences a null handle. The answers below
+    // are the ones a Windows test run gets from the web server's ObservingAutomationHandler
+    // (Microsoft.Dynamics.Nav.Client.WebCommon): a handle for a known client extension type
+    // when no instance is asked for, false for its static IsAvailable and for #IsNull, and
+    // NavDotNetFromAlNotSupportedException for everything else. Issue #125.
+    // ========================================================================
+    private static readonly string[] ClientExtensionTypes =
+    {
+        // ObservingAutomationHandler.AllClientExtentionsTypes, BC 28.5.
+        "Microsoft.Dynamics.Nav.Client.Capabilities.LocationProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.CameraProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.CameraBarcodeScannerProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.BarcodeScannerProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.DeviceContactProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.Tour",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.UserTours",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.AppSource",
+        "Microsoft.Dynamics.Nav.Client.PageNotifier",
+        "Microsoft.Dynamics.Nav.Client.Hosts.OfficeHost",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.Designer",
+    };
+
+    private static Type? _navAutomationHandleType;
+    private static Type? _dotNetFromAlNotSupportedExceptionType;
+    private static PropertyInfo? _automationRequestMethodName;
+    private static int _nextClientExtensionHandle = 1000;
+
+    private static void PatchTestRunnerClientCallbackDotNet(Assembly serviceDev)
+    {
+        if (IsPatchDisabled("37")) return;
+        try
+        {
+            var callback = serviceDev.GetType("Microsoft.Dynamics.Nav.Service.Dev.TestExecution.TestRunnerClientCallback");
+            if (callback == null) return; // Patch #36 already said why
+            _navAutomationHandleType = Type.GetType("Microsoft.Dynamics.Nav.Types.NavAutomationHandle, Microsoft.Dynamics.Nav.Types");
+            _dotNetFromAlNotSupportedExceptionType = Type.GetType(
+                "Microsoft.Dynamics.Nav.Types.Exceptions.NavDotNetFromAlNotSupportedException, Microsoft.Dynamics.Nav.Types");
+
+            const BindingFlags all = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly;
+            var create = callback.GetMethods(all).FirstOrDefault(m => m.Name == "CreateDotNetHandle"
+                && m.ReturnType == _navAutomationHandleType && m.GetParameters().Length == 6);
+            var invoke = callback.GetMethods(all).FirstOrDefault(m => m.Name == "InvokeAutomationMethod"
+                && m.ReturnType == typeof(object) && m.GetParameters().Length == 1);
+            _automationRequestMethodName = invoke?.GetParameters()[0].ParameterType.GetProperty("MethodName");
+            if (create == null || invoke == null || _navAutomationHandleType == null
+                || _dotNetFromAlNotSupportedExceptionType == null || _automationRequestMethodName == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #37: TestRunnerClientCallback shape changed — skipping");
+                return;
+            }
+
+            ApplyJmpHook(create, typeof(StartupHook).GetMethod(nameof(Replacement_TestRunnerCreateDotNetHandle),
+                BindingFlags.Static | BindingFlags.NonPublic)!, "TestRunnerClientCallback.CreateDotNetHandle (Patch #37)");
+            ApplyJmpHook(invoke, typeof(StartupHook).GetMethod(nameof(Replacement_TestRunnerInvokeAutomationMethod),
+                BindingFlags.Static | BindingFlags.NonPublic)!, "TestRunnerClientCallback.InvokeAutomationMethod (Patch #37)");
+            Console.WriteLine("[StartupHook] Patch #37: TestRunnerClientCallback RunOnClient DotNet answers as a Windows test client");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #37 failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static object Replacement_TestRunnerCreateDotNetHandle(object self, string assemblyFullName, string typeName,
+        Guid formHandle, string varName, bool createInstance, object[] arguments)
+    {
+        if (Array.IndexOf(ClientExtensionTypes, typeName) >= 0 && !createInstance && string.IsNullOrEmpty(varName))
+            return Activator.CreateInstance(_navAutomationHandleType!, System.Threading.Interlocked.Increment(ref _nextClientExtensionHandle), false)!;
+        throw ClientSideDotNetNotSupported();
+    }
+
+    // Wrapped the way the server rethrows a client's exception (as in Patch #36), so the AL
+    // error code is "DotNetFromAlNotSupported:DotNetFromAlNotSupported" on both runners.
+    private static Exception ClientSideDotNetNotSupported()
+    {
+        var inner = (Exception)Activator.CreateInstance(_dotNetFromAlNotSupportedExceptionType!)!;
+        return (Exception)Activator.CreateInstance(_dotNetFromAlNotSupportedExceptionType!, inner.Message, inner)!;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static object Replacement_TestRunnerInvokeAutomationMethod(object self, object request)
+    {
+        // Only a handle from the replacement above can reach this: every other create throws.
+        var methodName = _automationRequestMethodName!.GetValue(request) as string;
+        if (methodName == "IsAvailable" || methodName == "#IsNull")
+            return false;
+        throw ClientSideDotNetNotSupported();
     }
 
     // ========================================================================

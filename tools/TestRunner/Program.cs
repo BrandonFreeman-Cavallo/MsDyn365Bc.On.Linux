@@ -349,7 +349,9 @@ async Task<int> RunTests()
             // The session died mid-codeunit (BC recycled it, or the watchdog aborted a
             // hung one). The codeunit itself still ran, and its per-function results are
             // in the Test Method Line table, so read them and open a fresh session next
-            // time round.
+            // time round. Say why: a codeunit cut short shows up as SKIP rows with no
+            // other trace in the log (issue #125, codeunit 61202 on BC 27).
+            Console.Error.WriteLine($"[testrunner] session lost during codeunit {codeunitsRun + 1}: {ex.GetType().Name}: {ex.Message[..Math.Min(300, ex.Message.Length)]}");
             haveSession = false;
             codeunitsRun++;
             // Print live per-function results for the codeunit that just completed
@@ -746,7 +748,7 @@ class Callbacks
         }
         if (Rpc != null && action == FileActionUpload)
         {
-            try { await Rpc.InvokeAsync("SendClientException", new object?[] { NotSupportedFileDialogFault(), NotSupportedFileDialogMessage }); } catch { }
+            try { await Rpc.InvokeAsync("SendClientException", new object?[] { ClientFault(NotSupportedFileDialogType, NotSupportedFileDialogMessage), NotSupportedFileDialogMessage }); } catch { }
             return;
         }
         await AckCallback("FileActionDialog");
@@ -769,15 +771,17 @@ class Callbacks
     private const string NotSupportedFileDialogMessage =
         "The operation cannot complete because it uses a feature that is not supported (AL File function.)";
 
-    // A ServerFault carrying NavNotSupportedFileDialogProviderException, in the form
+    private const string NotSupportedFileDialogType = "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException";
+
+    // A ServerFault carrying a Microsoft.Dynamics.Nav.Types exception, in the form
     // ExceptionHandler.DeserializeFromByteArray reads: base64 of a JSON array of exceptions,
     // each serialized through ISerializable with its $type. The server rethrows it as the
     // original exception, so AL sees the same text and error code as on Windows.
-    private static JObject NotSupportedFileDialogFault()
+    private static JObject ClientFault(string typeName, string message)
     {
         var exception = new JObject
         {
-            ["$type"] = "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException, Microsoft.Dynamics.Nav.Types",
+            ["$type"] = typeName + ", Microsoft.Dynamics.Nav.Types",
             ["SuppressMessage"] = false,
             ["FatalityScope"] = 0,
             ["errorLevel"] = 0,
@@ -789,8 +793,8 @@ class Callbacks
             ["detailedErrorMessage"] = null,
             ["EnglishLanguageDiagnosticsMessage"] = null,
             ["UntrappableError"] = false,
-            ["ClassName"] = "Microsoft.Dynamics.Nav.Types.Exceptions.NavNotSupportedFileDialogProviderException",
-            ["Message"] = NotSupportedFileDialogMessage,
+            ["ClassName"] = typeName,
+            ["Message"] = message,
             ["Data"] = null,
             ["InnerException"] = null,
             ["HelpURL"] = null,
@@ -806,14 +810,103 @@ class Callbacks
         return new JObject { ["exceptionData"] = data, ["responseQueue"] = null };
     }
     [JsonRpcMethod("FeedbackRequested")] public async Task FeedbackRequested(JToken r) => await AckCallback("FeedbackRequested");
-    [JsonRpcMethod("CreateDotNetHandle")] public async Task CreateDotNetHandle(JToken r) => await AckCallback("CreateDotNetHandle");
+    // RunOnClient DotNet, answered the way the client of a Windows container's test run does
+    // (issue #125). That client is the web server's client-services session, whose
+    // ObservingAutomationHandler (Microsoft.Dynamics.Nav.Client.WebCommon) hands out a handle
+    // for a known client extension type when no instance is asked for, answers the static
+    // IsAvailable on it with whether the session supports the extension - which a session with
+    // no browser does not - and refuses everything else with NavDotNetFromAlNotSupportedException.
+    // So "if UserTours.IsAvailable() then" is false and the page opens, as on Windows. The
+    // generic null ack made NSClientCallback dereference a null AutomationMethodResponse: a
+    // NullReferenceException in AL, e.g. from "O365 Activities" OnInit when a TestPage opens
+    // the Business Manager Role Center, and on BC 27 the end of the session.
+    [JsonRpcMethod("CreateDotNetHandle")] public async Task CreateDotNetHandle(JToken r)
+    {
+        if (Rpc == null) return;
+        var request = r.Type == JTokenType.Array ? r.First : r;
+        var typeName = Field(request, "TypeName")?.ToString() ?? "";
+        var varName = Field(request, "VarName")?.ToString();
+        bool createInstance = Field(request, "CreateInstance")?.Type == JTokenType.Boolean && Field(request, "CreateInstance")!.Value<bool>();
+        try
+        {
+            if (Array.IndexOf(ClientExtensionTypes, typeName) >= 0 && !createInstance && string.IsNullOrEmpty(varName))
+            {
+                int handle = Interlocked.Increment(ref _nextExtensionHandle);
+                var returnValue = new JObject { ["typeHint"] = 17, ["value"] = new JObject { ["handle"] = handle, ["isComObject"] = false } };
+                await Rpc.InvokeAsync("EndClientAutomationMethodCall", new object?[] { AutomationResponse(returnValue, request) });
+                return;
+            }
+            await Rpc.InvokeAsync("SendClientException", new object?[] { ClientFault(DotNetFromAlNotSupportedType, DotNetFromAlNotSupportedMessage), DotNetFromAlNotSupportedMessage });
+        }
+        catch { /* connection may be closing */ }
+    }
+
+    // ObservingAutomationHandler.AllClientExtentionsTypes, BC 28.5.
+    private static readonly string[] ClientExtensionTypes =
+    {
+        "Microsoft.Dynamics.Nav.Client.Capabilities.LocationProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.CameraProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.CameraBarcodeScannerProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.BarcodeScannerProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.DeviceContactProvider",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.Tour",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.UserTours",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.AppSource",
+        "Microsoft.Dynamics.Nav.Client.PageNotifier",
+        "Microsoft.Dynamics.Nav.Client.Hosts.OfficeHost",
+        "Microsoft.Dynamics.Nav.Client.Capabilities.Designer",
+    };
+
+    private int _nextExtensionHandle = 1000;
+
+    // InvokeAutomationMethod on a handle from CreateDotNetHandle above (every other
+    // CreateDotNetHandle is refused, so no other handle exists). Static IsAvailable is false
+    // and #IsNull is false, as the web client answers for an extension object. Anything else
+    // (Create, a method of an instance) fails: the web client raises NavNCLDotNetCreateException
+    // there, whose message this runner does not have, so it refuses with the same
+    // NavDotNetFromAlNotSupportedException as above. A test only gets here by ignoring
+    // IsAvailable.
+    [JsonRpcMethod("InvokeAutomationMethod")] public async Task InvokeAutomationMethod(JToken r)
+    {
+        if (Rpc == null) return;
+        var request = r.Type == JTokenType.Array ? r.First : r;
+        var methodName = Field(request, "MethodName")?.ToString() ?? "";
+        try
+        {
+            if (methodName == "IsAvailable" || methodName == "#IsNull")
+            {
+                var returnValue = new JObject { ["typeHint"] = 19, ["value"] = false };
+                await Rpc.InvokeAsync("EndClientAutomationMethodCall", new object?[] { AutomationResponse(returnValue, request) });
+                return;
+            }
+            await Rpc.InvokeAsync("SendClientException", new object?[] { ClientFault(DotNetFromAlNotSupportedType, DotNetFromAlNotSupportedMessage), DotNetFromAlNotSupportedMessage });
+        }
+        catch { /* connection may be closing */ }
+    }
+
+    // Microsoft.Dynamics.Nav.Types.AutomationMethodResponse, by its [DataMember] field names.
+    // The server copies "arguments" back into the caller's by index, so they are echoed.
+    private static JObject AutomationResponse(JObject returnValue, JToken? request) => new()
+    {
+        ["returnValue"] = returnValue,
+        ["arguments"] = Field(request, "Arguments")?.DeepClone() ?? new JArray(),
+    };
+
+    private static JToken? Field(JToken? obj, string name) =>
+        (obj as JObject)?.GetValue(name, StringComparison.OrdinalIgnoreCase);
+
+    private const string DotNetFromAlNotSupportedType = "Microsoft.Dynamics.Nav.Types.Exceptions.NavDotNetFromAlNotSupportedException";
+    // Lang.NavDotNetFromAlNotSupportedException, the message of NavDotNetFromAlNotSupportedException.
+    private const string DotNetFromAlNotSupportedMessage =
+        "The operation cannot complete because it uses a feature that is not supported (.NET Framework Interoperability.)";
     [JsonRpcMethod("GetDotNetObject")] public async Task GetDotNetObject(JToken r) => await AckCallback("GetDotNetObject");
     // Dialog callbacks — BC sends these when AL code opens/closes dialogs
     [JsonRpcMethod("CloseDialog")] public async Task CloseDialog(JToken r) => await AckCallback("CloseDialog");
     [JsonRpcMethod("OpenDialog")] public async Task OpenDialog(JToken r) => await AckCallback("OpenDialog");
     [JsonRpcMethod("UpdateDialog")] public async Task UpdateDialog(JToken r) => await AckCallback("UpdateDialog");
-    [JsonRpcMethod("DisposeAutomationObject")] public Task DisposeAutomationObject(JToken r) => Task.CompletedTask;
-    [JsonRpcMethod("InvokeAutomationMethod")] public Task InvokeAutomationMethod(JToken r) => Task.CompletedTask;
+    // BC waits for this one (GetClientReturnValue: DisposeAutomationObject), so it needs the
+    // EndClientCall too. Before CreateDotNetHandle handed out handles it was never reached.
+    [JsonRpcMethod("DisposeAutomationObject")] public async Task DisposeAutomationObject(JToken r) => await AckCallback("DisposeAutomationObject");
     [JsonRpcMethod("DataSetPageReady")] public Task DataSetPageReady(JToken r) => Task.CompletedTask;
     [JsonRpcMethod("OpenProgressDialog")] public Task OpenProgressDialog(JToken r) => Task.CompletedTask;
     [JsonRpcMethod("CloseProgressDialog")] public Task CloseProgressDialog() => Task.CompletedTask;

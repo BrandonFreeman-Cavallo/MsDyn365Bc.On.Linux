@@ -234,19 +234,29 @@ on Windows, slightly skewing timing comparisons for affected codeunits.
 to skip the constraint. Not implemented — would require finding the exact method
 in Nav.Ncl or Nav.Server that performs this check.
 
-## "NullReferenceException in NSClientCallback.CreateDotNetHandle" (~29+ failures)
+## ~~"NullReferenceException in NSClientCallback.CreateDotNetHandle" (~29+ failures)~~ — FIXED (issue #125)
 
-**Root cause**: Tests that use .NET controls requiring a UI context (Camera,
-Barcode Scanner, etc.) crash because the headless test runner has no client UI
-to create .NET control handles on. `NSClientCallback.CreateDotNetHandle` throws
-NullReferenceException when there's no UI session.
+**Root cause**: not a missing UI session in BC, but the answer the test client gave.
+`if Camera.IsAvailable()`, `UserTours.IsAvailable()`, `PageNotifier.IsAvailable()` and the
+other client capabilities are RunOnClient DotNet: BC asks the client to create a handle for
+the type (`CreateDotNetHandle`), then calls the static `IsAvailable` on it
+(`InvokeAutomationMethod`). The websocket runner acknowledged both with a null result, and
+`NSClientCallback` dereferenced the missing `AutomationMethodResponse`. The hub's
+`TestRunnerClientCallback` returns null from both, with the same effect. That is what broke a
+TestPage of the Business Manager Role Center (`"O365 Activities"` `OnInit`), and on BC 27 an
+exception in a client callback ends the session.
 
-**Example**: `Camera Page Impl.` (CU 1908) `.IsAvailable` → crashes any test
-that opens a page with a Camera control.
-
-**Potential fix**: Patch `NSClientCallback.CreateDotNetHandle` in Nav.Service to
-return a dummy handle (or null) instead of crashing. Would turn crashes into
-graceful no-ops where the DotNet control simply isn't available.
+**Fix**: answer as a Windows container's test client does. That client is the web server's
+client-services session, whose `ObservingAutomationHandler`
+(`Microsoft.Dynamics.Nav.Client.WebCommon`) creates a handle for the eleven client extension
+types it knows when no instance is asked for, says false to `IsAvailable` and `#IsNull` on
+it in a session without a browser, and refuses every other RunOnClient DotNet with
+`NavDotNetFromAlNotSupportedException`. `tools/TestRunner` now gives those answers (and
+acknowledges `DisposeAutomationObject`, which BC waits for and which nothing reached
+before); Patch #37 gives them on the hub. Verified on BC 28.5 with both runners, and guarded
+by `extensions/smoke-test` codeunit 70019. The IsAvailable answer was read from Microsoft's
+code, not measured on Windows; the Role Center opening on Windows was measured (corpus run
+39162785239).
 
 Note that Patch #21 (`NavOpenTaskPageAction.ShowForm`) is no longer a model for
 that: it started as a no-op and was rewritten to do the real work, because
