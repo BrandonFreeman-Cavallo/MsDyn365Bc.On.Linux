@@ -180,6 +180,22 @@ on:
         required: false
         type: string
         default: ""
+      extra_apps:
+        description: >-
+          Newline-separated names of Microsoft apps from the BC artifact to
+          keep installed, together with their dependencies, although none of
+          your apps declares them (issue #125). The tier keeps only what your
+          apps need, so it can differ from a Windows container that has more
+          apps installed. Example: Tests-TestLibraries, whose codeunit 130011
+          "Backup Management" subscribes to GetDatabaseTableTriggerSetup and
+          so changes those results. A name that matches no app in the
+          artifact fails the job. Names are not case-sensitive. Each app that
+          is not already installed in the database costs a publish at boot:
+          Tests-TestLibraries ships no precompiled code and takes about 17s.
+          Empty (default) = no change.
+        required: false
+        type: string
+        default: ""
       assembly_probing_paths:
         description: >-
           Newline-separated folders passed to the compiler as
@@ -593,6 +609,7 @@ jobs:
         env:
           APP_DIRS: ${{ inputs.app_dirs }}
           TEST_APP_DIRS: ${{ inputs.test_app_dirs }}
+          EXTRA_APPS: ${{ inputs.extra_apps }}
         run: |
           bash bc-linux/scripts/workflow-summary.sh begin RESOLVE "Resolve apps to keep"
           # Walk the consumer's app.json files (production + test) AND
@@ -616,6 +633,12 @@ jobs:
               ARGS+=(--app-json "project/$d/app.json")
             fi
           done <<< "$APP_DIRS"$'\n'"$TEST_APP_DIRS"
+          while IFS= read -r name; do
+            name="${name%$'\r'}"
+            if [ -n "${name//[[:space:]]/}" ]; then
+              ARGS+=(--extra-app-name "$name")
+            fi
+          done <<< "$EXTRA_APPS"
           KEEP_IDS=$(python3 bc-linux/scripts/resolve-keep-app-ids.py \
             "${ARGS[@]}" \
             --artifact-dir "$BC_ARTIFACTS_DIR")

@@ -172,6 +172,8 @@ services:
       BC_PROFILE_NST: ${BC_PROFILE_NST:-0}
       BC_ARTIFACT_URL: ${BC_ARTIFACT_URL:-}
       BC_TEST_APPS: ${BC_TEST_APPS:-}
+      # Seconds each dev-endpoint publish at boot may take (default 600).
+      BC_PUBLISH_TIMEOUT: ${BC_PUBLISH_TIMEOUT:-}
       # Opt-in: self-host Microsoft's real BC web client on Kestrel (port 8080).
       # EXPERIMENTAL PoC — see docs/WEBCLIENT-POC.md.
       BC_WEBCLIENT: ${BC_WEBCLIENT:-0}
