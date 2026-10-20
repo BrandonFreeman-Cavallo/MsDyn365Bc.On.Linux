@@ -393,6 +393,14 @@ on:
         required: false
         type: number
         default: 45
+      test_timeout_minutes:
+        description: >-
+          Overall time limit, in minutes, for each test phase (the --timeout of the
+          test runner scripts). Default 30. Raise it for a suite whose phase runs
+          longer; keep it below timeout_minutes.
+        required: false
+        type: number
+        default: 30
       health_timeout_minutes:
         description: >-
           How long to wait for the BC container to report healthy. Default 30.
@@ -1366,7 +1374,7 @@ jobs:
                 --dev-url "http://localhost:${BC_DEV_PORT}/BC/dev" \
                 --api-port "$BC_API_PORT" \
                 "${COMPANY_ARGS[@]}" \
-                --timeout 30 2>&1 | tee "$tmplog"
+                --timeout ${{ inputs.test_timeout_minutes }} 2>&1 | tee "$tmplog"
             elif [ "$EFFECTIVE_RUNNER" = "altool" ]; then
               # test_runner=altool (explicit force): EVERY codeunit through
               # the hub, no split — this is the "catch hub regressions"
@@ -1388,7 +1396,7 @@ jobs:
                 --base-url "http://localhost:${BC_ODATA_PORT}/BC" \
                 --api-port "$BC_API_PORT" \
                 "${COMPANY_ARGS[@]}" \
-                --timeout 30 2>&1 | tee "$tmplog"
+                --timeout ${{ inputs.test_timeout_minutes }} 2>&1 | tee "$tmplog"
             else
               ./scripts/run-tests.sh \
                 --app "$app" \
@@ -1397,7 +1405,7 @@ jobs:
                 --base-url "http://localhost:${BC_ODATA_PORT}/BC" \
                 --dev-url "http://localhost:${BC_DEV_PORT}/BC/dev" \
                 "${COMPANY_ARGS[@]}" \
-                --timeout 30 2>&1 | tee "$tmplog"
+                --timeout ${{ inputs.test_timeout_minutes }} 2>&1 | tee "$tmplog"
             fi
             RUN_TESTS_RC=${PIPESTATUS[0]}
             if [ "$RUN_TESTS_RC" -ne 0 ]; then
