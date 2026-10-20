@@ -291,6 +291,16 @@ using System.Threading.Tasks;
 ///   says false to the static IsAvailable (no browser, so no extension), and refuses anything
 ///   else with NavDotNetFromAlNotSupportedException. Fix: the same answers. The websocket
 ///   runner's client gives them too (tools/TestRunner, CreateDotNetHandle).
+/// Patch #39: Microsoft.Dynamics.Nav.Timer.OnTimerElapsed (Microsoft.Dynamics.Nav.Timer.dll) — issue #136
+///   An Error() in a DotNet Timer's Elapsed trigger: with RedirectExceptions false the add-in
+///   rethrows on its thread-pool thread, which ended the whole NST (rc=134, BC 28.5). On
+///   Windows the test runs to the end; Elapsed fired, ExceptionOccurred did not. Fix: the same
+///   body without the rethrow. RedirectExceptions timers still raise ExceptionOccurred.
+/// Patch #40: NavMediaImageSkia.Bytes (Nav.Ncl.dll) — BC 29, issue #135
+///   BC 29 builds a NavMediaImageSkia instead of a NavMediaImage when OperatingSystem.IsWindows()
+///   is false, and its Bytes() returns the imported bytes; Windows re-encodes them with GDI+.
+///   Fix: hand a PNG to DrawingStub's GdiPlusPng (what BC 27/28 reach through
+///   NavMediaImage.Bytes); anything it does not handle keeps the source bytes.
 /// Patch #19b: NavSession.InitReportingClientAsync (Nav.Ncl.dll) — BC 29, issue #109
 ///   BC 29 removed NavEnvironment.CustomReportingServiceClient (the factory Patch #19 replaced) and
 ///   kept only DecorateReportingServiceClient, which wraps a client InitReportingClientAsync has
@@ -708,6 +718,12 @@ internal class StartupHook
             PatchWatsonReporting(args.LoadedAssembly);
         }
 
+        // Patch #39: an AL error in a DotNet Timer's Elapsed trigger must not end the process.
+        if (name == "Microsoft.Dynamics.Nav.Timer")
+        {
+            PatchNavTimerElapsed(args.LoadedAssembly);
+        }
+
         // Patch #33: give colliding API endpoints their own ports.
         if (name == "Microsoft.Dynamics.Nav.Service.AspNetCore")
         {
@@ -813,6 +829,13 @@ internal class StartupHook
         {
             PatchNavLicenseDispose(args.LoadedAssembly);
             PatchNavDatabaseSecurityAndLicenseDispose(args.LoadedAssembly);
+        }
+
+        // Patch #40: BC 29's non-Windows media image keeps the imported bytes; Windows
+        // re-encodes through GDI+ (issue #135). Only BC 29 has the class.
+        if (name == "Microsoft.Dynamics.Nav.Ncl")
+        {
+            PatchNavMediaImageSkiaBytes(args.LoadedAssembly);
         }
 
         // Patch #34: the hub's test runner never clears the last error between test methods
@@ -4264,6 +4287,140 @@ internal class StartupHook
             // let the real file operation surface the error with its usual mapping.
         }
         return fileName;
+    }
+
+    // ========================================================================
+    // Patch #39: Microsoft.Dynamics.Nav.Timer.OnTimerElapsed (issue #136)
+    // ========================================================================
+    // The Timer add-in raises Elapsed on a thread-pool thread. When the AL trigger fails
+    // and RedirectExceptions is false, OnTimerElapsed rethrows (`else if (timer != null)
+    // throw;`), and an exception that leaves a thread-pool callback ends the process: the
+    // whole NST stopped with rc=134 here, measured on BC 28.5. On Windows (BC 27.5 and 29.0)
+    // the same test runs to the end, Elapsed fired and ExceptionOccurred did not. Why
+    // Windows survives the rethrow was not determined. The replacement is the same body
+    // without the rethrow: the error is already logged by BC's interop event handler, a
+    // RedirectExceptions timer still raises ExceptionOccurred, and nothing else changes.
+
+    private static FieldInfo? _timerElapsedField;      // m_Elapsed
+    private static PropertyInfo? _timerRedirectProp;   // RedirectExceptions
+    private static MethodInfo? _timerOnRedirect;       // OnRedirectException(Exception)
+
+    private static void PatchNavTimerElapsed(Assembly timerAsm)
+    {
+        if (IsPatchDisabled("39")) return;
+        try
+        {
+            var timerType = timerAsm.GetType("Microsoft.Dynamics.Nav.Timer");
+            const BindingFlags inst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var original = timerType?.GetMethod("OnTimerElapsed", inst, null, Type.EmptyTypes, null);
+            _timerElapsedField = timerType?.GetField("m_Elapsed", inst)
+                ?? timerType?.GetField("Elapsed", inst);
+            _timerRedirectProp = timerType?.GetProperty("RedirectExceptions", inst);
+            _timerOnRedirect = timerType?.GetMethod("OnRedirectException", inst, null, new[] { typeof(Exception) }, null);
+            if (original == null || _timerElapsedField == null || _timerRedirectProp == null || _timerOnRedirect == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #39: Microsoft.Dynamics.Nav.Timer shape changed — skipping");
+                return;
+            }
+            var replacement = typeof(StartupHook).GetMethod(nameof(Replacement_TimerOnTimerElapsed),
+                BindingFlags.Static | BindingFlags.NonPublic)!;
+            ApplyJmpHook(original, replacement, "Microsoft.Dynamics.Nav.Timer.OnTimerElapsed (Patch #39)");
+            Console.WriteLine("[StartupHook] Patch #39: Timer.OnTimerElapsed no longer rethrows onto the thread pool");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #39 failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static void Replacement_TimerOnTimerElapsed(object self)
+    {
+        if (_timerElapsedField!.GetValue(self) is not Delegate elapsed) return;
+        try
+        {
+            elapsed.DynamicInvoke(self, new EventArgs());
+        }
+        catch (Exception ex)
+        {
+            var error = ex is TargetInvocationException { InnerException: not null } tie ? tie.InnerException! : ex;
+            try
+            {
+                if (_timerRedirectProp!.GetValue(self) is true)
+                {
+                    _timerOnRedirect!.Invoke(self, new object[] { error });
+                    return;
+                }
+            }
+            catch (Exception redirectEx)
+            {
+                error = redirectEx is TargetInvocationException { InnerException: not null } rtie ? rtie.InnerException! : redirectEx;
+            }
+            Console.WriteLine($"[StartupHook] Patch #39: Timer Elapsed handler failed, not rethrown: {error.GetType().Name}: {error.Message}");
+        }
+    }
+
+    // ========================================================================
+    // Patch #40: NavMediaImageSkia.Bytes (Nav.Ncl.dll, BC 29) — issue #135
+    // ========================================================================
+    // BC 29 takes a different media path when OperatingSystem.IsWindows() is false:
+    // NavMediaFactory.ProcessMediaObject builds a NavMediaImageSkia, whose Bytes() returns
+    // the imported bytes. On Windows the same import goes through NavMediaImage, which
+    // re-encodes the image with GDI+. So BC 29 kept a PNG's bytes here and re-encoded them
+    // on Windows. The replacement hands a PNG to DrawingStub's GdiPlusPng (the same
+    // encoder BC 27 and 28 reach through NavMediaImage.Bytes) and returns the source bytes
+    // for anything it does not handle, as before.
+
+    private static FieldInfo? _skiaSourceBytesField;
+    private static MethodInfo? _gdiPlusPngReencode;
+    private static bool _gdiPlusPngProbed;
+
+    private static void PatchNavMediaImageSkiaBytes(Assembly navNcl)
+    {
+        if (IsPatchDisabled("40")) return;
+        try
+        {
+            var type = navNcl.GetType("Microsoft.Dynamics.Nav.Runtime.Media.NavMediaImageSkia");
+            if (type == null) return; // BC 27/28: no such class, NavMediaImage.Bytes reaches DrawingStub
+            const BindingFlags inst = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+            var original = type.GetMethod("Bytes", inst, null, Type.EmptyTypes, null);
+            _skiaSourceBytesField = type.GetField("sourceBytes", inst);
+            if (original == null || original.ReturnType != typeof(byte[]) || _skiaSourceBytesField == null)
+            {
+                Console.WriteLine("[StartupHook] Patch #40: NavMediaImageSkia shape changed — skipping");
+                return;
+            }
+            var replacement = typeof(StartupHook).GetMethod(nameof(Replacement_NavMediaImageSkiaBytes),
+                BindingFlags.Static | BindingFlags.NonPublic)!;
+            ApplyJmpHook(original, replacement, "NavMediaImageSkia.Bytes (Patch #40)");
+            Console.WriteLine("[StartupHook] Patch #40: NavMediaImageSkia.Bytes re-encodes PNG as GDI+ does");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #40 failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static byte[] Replacement_NavMediaImageSkiaBytes(object self)
+    {
+        var source = (byte[])_skiaSourceBytesField!.GetValue(self)!;
+        try
+        {
+            if (!_gdiPlusPngProbed)
+            {
+                _gdiPlusPngReencode = Type.GetType("System.Drawing.GdiPlusPng, System.Drawing.Common")
+                    ?.GetMethod("TryReencode", BindingFlags.Static | BindingFlags.NonPublic | BindingFlags.Public);
+                _gdiPlusPngProbed = true;
+                if (_gdiPlusPngReencode == null)
+                    Console.WriteLine("[StartupHook] Patch #40: DrawingStub GdiPlusPng not found — media bytes pass through");
+            }
+            if (_gdiPlusPngReencode?.Invoke(null, new object[] { source }) is byte[] reencoded)
+                return reencoded;
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[StartupHook] Patch #40: re-encode failed: {ex.GetType().Name}: {ex.Message}");
+        }
+        return source;
     }
 
     // ========================================================================
