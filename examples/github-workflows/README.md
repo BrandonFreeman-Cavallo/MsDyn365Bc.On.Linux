@@ -2,7 +2,7 @@
 
 Run AL tests against a Business Central NST on Linux from your own GitHub
 repo. All flavours pull the public
-`ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner` image (no auth needed)
+`ghcr.io/aldevtools/msdyn365bc.on.linux/bc-runner` image (no auth needed)
 and use the bc-linux scripts to boot BC, publish your apps, and execute
 tests via the bundled TestRunnerExtension.
 
@@ -17,7 +17,7 @@ name: BC Tests
 on: [push, pull_request, workflow_dispatch]
 jobs:
   bc-tests:
-    uses: StefanMaron/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
+    uses: aldevtools/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
     with:
       bc_version:     "27.5"
       app_dirs:       "app"
@@ -89,7 +89,7 @@ Then call the reusable workflow with:
 ```yaml
 jobs:
   bc-tests:
-    uses: StefanMaron/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
+    uses: aldevtools/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
     with:
       ...
     secrets:
@@ -140,7 +140,7 @@ All flavours:
 
 ## What's running under the hood
 
-- **Image**: `ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner:latest` — multi-stage Docker
+- **Image**: `ghcr.io/aldevtools/msdyn365bc.on.linux/bc-runner:latest` — multi-stage Docker
   image that downloads Microsoft BC artifacts at boot, copies the .NET 8
   service tier into place, applies a startup-hook patch set, restores the
   CRONUS demo DB, and exposes BC on the standard 7045–7089 ports.
@@ -175,7 +175,7 @@ A worked example using the reusable flavour:
 ```yaml
 jobs:
   bc-tests:
-    uses: StefanMaron/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
+    uses: aldevtools/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
     with:
       bc_version:     "27.5"
       app_dirs:       "app"
@@ -222,7 +222,7 @@ that hides the real cause, `ALCops.Common.dll` co-load) live in
 ## Reporting issues
 
 If a workflow fails on the bc-linux side (not your AL code), open an issue
-at <https://github.com/StefanMaron/MsDyn365Bc.On.Linux/issues> with:
+at <https://github.com/aldevtools/MsDyn365Bc.On.Linux/issues> with:
 
 - Your `env:` block
 - The BC version you targeted

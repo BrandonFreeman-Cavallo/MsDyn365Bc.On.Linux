@@ -197,14 +197,14 @@ and `stage-symbols.py`. It isn't: the app simply never installed.
 **Fix** — switch to the FTS-capable SQL image:
 
 ```bash
-BC_SQL_IMAGE=ghcr.io/stefanmaron/msdyn365bc.on.linux/mssql:2022-fts docker compose up -d --wait
+BC_SQL_IMAGE=ghcr.io/aldevtools/msdyn365bc.on.linux/mssql:2022-fts docker compose up -d --wait
 ```
 
 or in the reusable workflows:
 
 ```yaml
 with:
-  sql_image: ghcr.io/stefanmaron/msdyn365bc.on.linux/mssql:2022-fts
+  sql_image: ghcr.io/aldevtools/msdyn365bc.on.linux/mssql:2022-fts
 ```
 
 It is **opt-in, not the default**: FTS adds ~550 MB (1.68 GB → 2.23 GB

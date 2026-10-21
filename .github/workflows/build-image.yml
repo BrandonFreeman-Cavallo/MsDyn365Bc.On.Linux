@@ -21,7 +21,10 @@ env:
   # silently invisible to every CI run because of this mismatch. Don't move
   # this without simultaneously updating docker-compose.yml and any
   # downstream consumer.
-  IMAGE_NAME: stefanmaron/msdyn365bc.on.linux/bc-runner
+  # The repo moved from StefanMaron to the aldevtools org on 2026-10-21. GHCR
+  # packages stay with the old account, so new pushes go to aldevtools. Never
+  # delete the old ghcr.io/stefanmaron/... images: old pins still pull them.
+  IMAGE_NAME: aldevtools/msdyn365bc.on.linux/bc-runner
 
 jobs:
   build-push:
