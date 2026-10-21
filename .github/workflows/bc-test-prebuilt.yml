@@ -11,7 +11,7 @@ name: BC test (prebuilt) [reusable]
 #   on: [push, pull_request, workflow_dispatch]
 #   jobs:
 #     test:
-#       uses: StefanMaron/MsDyn365Bc.On.Linux/.github/workflows/bc-test-prebuilt.yml@master
+#       uses: aldevtools/MsDyn365Bc.On.Linux/.github/workflows/bc-test-prebuilt.yml@master
 #       with:
 #         bc_version:     "27.5"
 #         test_app_files: "tests/MyTests.app"
@@ -180,7 +180,7 @@ on:
         type: string
         default: ""
       bc_linux_ref:
-        description: "Git ref of StefanMaron/MsDyn365Bc.On.Linux to check out for scripts"
+        description: "Git ref of aldevtools/MsDyn365Bc.On.Linux to check out for scripts"
         required: false
         type: string
         default: "master"
@@ -243,7 +243,7 @@ jobs:
       - name: Checkout MsDyn365Bc.On.Linux
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.BC_LINUX_REPOSITORY || 'StefanMaron/MsDyn365Bc.On.Linux' }}
+          repository: ${{ vars.BC_LINUX_REPOSITORY || 'aldevtools/MsDyn365Bc.On.Linux' }}
           ref: ${{ inputs.bc_linux_ref }}
           path: bc-linux
 

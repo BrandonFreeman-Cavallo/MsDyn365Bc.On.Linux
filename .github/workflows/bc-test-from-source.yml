@@ -9,7 +9,7 @@ name: BC test (from source) [reusable]
 #   on: [push, pull_request, workflow_dispatch]
 #   jobs:
 #     test:
-#       uses: StefanMaron/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
+#       uses: aldevtools/MsDyn365Bc.On.Linux/.github/workflows/bc-test-from-source.yml@master
 #       with:
 #         bc_version:     "27.5"
 #         app_dirs:       "app"
@@ -384,7 +384,7 @@ on:
         type: boolean
         default: false
       bc_linux_ref:
-        description: "Git ref of StefanMaron/MsDyn365Bc.On.Linux to check out for scripts (master, a tag, or a commit SHA)"
+        description: "Git ref of aldevtools/MsDyn365Bc.On.Linux to check out for scripts (master, a tag, or a commit SHA)"
         required: false
         type: string
         default: "master"
@@ -534,7 +534,7 @@ jobs:
     # can't live on the calling job.
     continue-on-error: ${{ inputs.continue_on_error }}
     env:
-      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'stefanmaron/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+      BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'aldevtools/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
       BC_RDLC_RENDERER: ${{ inputs.rdlc_renderer && 'mono' || '' }}
       BC_RDLC_TRUST_LAYOUTS: ${{ inputs.rdlc_renderer && inputs.rdlc_trust_layouts && '1' || '' }}
       # Blank passes through to docker-compose's `${BC_SQL_IMAGE:-<mirror>}`
@@ -578,7 +578,7 @@ jobs:
       - name: Checkout MsDyn365Bc.On.Linux
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.BC_LINUX_REPOSITORY || 'StefanMaron/MsDyn365Bc.On.Linux' }}
+          repository: ${{ vars.BC_LINUX_REPOSITORY || 'aldevtools/MsDyn365Bc.On.Linux' }}
           ref: ${{ inputs.bc_linux_ref }}
           path: bc-linux
 
@@ -599,7 +599,7 @@ jobs:
 
       - name: Download BC artifacts + pull docker images (parallel)
         env:
-          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'stefanmaron/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
+          BC_RUNNER_IMAGE: ${{ inputs.runner_image || (inputs.rdlc_renderer && format('ghcr.io/{0}/bc-runner:rdlc', vars.IMAGE_NAMESPACE || 'aldevtools/msdyn365bc.on.linux')) || (vars.IMAGE_NAMESPACE && format('ghcr.io/{0}/bc-runner:latest', vars.IMAGE_NAMESPACE)) || '' }}
         run: |
           set -e
           bash bc-linux/scripts/workflow-summary.sh begin DOWNLOAD "Download BC artifacts + pull docker images"

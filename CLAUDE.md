@@ -292,7 +292,7 @@ hardened. Don't undo them without understanding why they exist.
   row even when the test app's metadata isn't loaded; only Function
   rows prove that real `[Test]` procedures are enumerable.
 - **`build-image.yml`'s `IMAGE_NAME` MUST match what consumers pull**
-  (`stefanmaron/msdyn365bc.on.linux/bc-runner`). In an earlier state
+  (`aldevtools/msdyn365bc.on.linux/bc-runner`). In an earlier state
   it was `stefanmaron/bc-runner` and every entrypoint fix went into
   an image namespace nobody used. The mismatch was invisible for
   weeks. Don't move this without auditing every consumer's
@@ -1283,7 +1283,7 @@ The bc-linux project ships **three** reusable workflows in
   wait-for-bc-healthy.sh) for free.
 
 `build-image.yml` builds and publishes the bc-runner image to
-`ghcr.io/stefanmaron/msdyn365bc.on.linux/bc-runner` on every push
+`ghcr.io/aldevtools/msdyn365bc.on.linux/bc-runner` on every push
 to master that touches `src/`, `scripts/`, or `extensions/`, tagging
 `:latest` and `:<sha>`. It caches layers to the registry `:cache` tag;
 `test-versions.yml`'s build job caches to `type=gha` instead, because
@@ -1332,7 +1332,7 @@ else nothing, and `docker-compose.yml`'s `${BC_RUNNER_IMAGE:-<default>}` supplie
 the literal (`:-` treats empty and unset alike, the same way `sql_image` already
 works). That compose default and the examples are the only places that carry the
 path. Both reusable workflows also read the checkout `repository:` from the
-`BC_LINUX_REPOSITORY` variable, falling back to `StefanMaron/MsDyn365Bc.On.Linux`.
+`BC_LINUX_REPOSITORY` variable, falling back to `aldevtools/MsDyn365Bc.On.Linux`.
 
 Two things to know. In a reusable workflow `vars` is the **caller's** repository
 variables, so a consumer sets `IMAGE_NAMESPACE` and `BC_LINUX_REPOSITORY` in its
