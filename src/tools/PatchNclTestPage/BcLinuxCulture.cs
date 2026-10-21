@@ -24,6 +24,9 @@ using System.Globalization;
 ///    and nb-NO minus sign (U+002D, CLDR U+2212).
 ///  * fr-FR on BC 29 (.NET 10), issue #167: the number group separator is U+00A0 on a Windows BC
 ///    29.0 container and U+202F in CLDR. BC 28 matched already and is left alone.
+///  * An unknown region such as zz-ZZ (issue #167): the dataset's typed dates are zero-padded
+///    (01/31/2025) on a Windows container and not (1/31/2025) here. The short date of a custom
+///    culture (LCID 4096) whose region is ZZ, the CLDR "unknown region", is set to MM/dd/yyyy.
 /// The rest of the ICU/NLS gap (collation, special-casing) is not reachable from here.
 /// </summary>
 internal static class BcLinuxCulture
@@ -148,7 +151,8 @@ internal static class BcLinuxCulture
             || string.Equals(name, "nl-NL", StringComparison.Ordinal)
             || string.Equals(name, "sv-SE", StringComparison.Ordinal)
             || string.Equals(name, "nb-NO", StringComparison.Ordinal)
-            || (string.Equals(name, "fr-FR", StringComparison.Ordinal) && Environment.Version.Major >= 10);
+            || (string.Equals(name, "fr-FR", StringComparison.Ordinal) && Environment.Version.Major >= 10)
+            || name.EndsWith("-ZZ", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -195,6 +199,10 @@ internal static class BcLinuxCulture
         else if (string.Equals(name, "fr-FR", StringComparison.Ordinal) && Environment.Version.Major >= 10)
         {
             n.NumberGroupSeparator = "\u00A0";
+        }
+        else if (culture.LCID == 4096 && name.EndsWith("-ZZ", StringComparison.OrdinalIgnoreCase))
+        {
+            d.ShortDatePattern = "MM/dd/yyyy";
         }
     }
 
