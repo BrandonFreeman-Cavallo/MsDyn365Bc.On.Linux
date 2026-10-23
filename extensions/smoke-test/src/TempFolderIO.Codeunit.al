@@ -11,6 +11,10 @@
 // methods of Directory and DirectoryInfo are routed through BcLinuxFileListing (the filelisting
 // patch) to do the same.
 //
+// Issue #185: Directory.Exists(Path + '/') and the folder AL makes only when it writes. These three
+// cases are not measured on a Windows container yet; whether Windows itself creates the folder on a
+// write is open.
+//
 // Expected values are what Windows BC 27.5, 28.5 and 29.0 containers reported.
 dotnet
 {
@@ -137,6 +141,67 @@ codeunit 70075 "BC Linux Temp Folder IO"
 
         TenantMedia.Get(Probe.Pictures.Item(1));
         LibraryAssert.AreEqual('bclinux-mediaset.png', TenantMedia."File Name", 'Tenant Media File Name');
+    end;
+
+    // Issue #185: an AL expression such as Path + '/' reaches a DotNet call as a plain string and
+    // used to skip the '\' to '/' conversion, so the folder AL made was not found.
+    [Test]
+    procedure DirectoryExistsAcceptsATrailingSeparator()
+    var
+        Directory: DotNet BcLinuxDirectory;
+        Folder: Text;
+    begin
+        Folder := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
+        Directory.CreateDirectory(Folder);
+        LibraryAssert.IsTrue(Directory.Exists(Folder), 'Exists(folder)');
+        LibraryAssert.IsTrue(Directory.Exists(Folder + '/'), 'Exists(folder + /)');
+        LibraryAssert.IsTrue(Directory.Exists(Folder + '\'), 'Exists(folder + \)');
+        LibraryAssert.IsFalse(Directory.Exists(Folder + '\missing'), 'Exists(missing subfolder)');
+        Directory.Delete(Folder, true);
+        LibraryAssert.IsFalse(Directory.Exists(Folder + '/'), 'Exists(deleted folder + /)');
+    end;
+
+    // Issue #185: a read-only call on a path in a missing folder must not make the folder
+    // (File.Exists did, and a later Directory.Delete of the parent found it).
+    [Test]
+    procedure ReadOnlyFileCallsDoNotCreateTheFolder()
+    var
+        Directory: DotNet BcLinuxDirectory;
+        InFile: File;
+        Parent: Text;
+        Missing: Text;
+    begin
+        Parent := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
+        Missing := Parent + '\sub\x.txt';
+
+        LibraryAssert.IsFalse(File.Exists(Missing), 'File.Exists');
+        LibraryAssert.IsFalse(Directory.Exists(Parent), 'File.Exists made the parent folder');
+        asserterror InFile.Open(Missing);
+        LibraryAssert.IsFalse(Directory.Exists(Parent), 'File.Open made the parent folder');
+        LibraryAssert.IsTrue(Directory.Exists(TemporaryPath()), 'TemporaryPath() exists');
+    end;
+
+    // The folder is still made where AL writes: create, the target of copy and rename.
+    [Test]
+    procedure WritingCreatesTheFolder()
+    var
+        Directory: DotNet BcLinuxDirectory;
+        Parent: Text;
+    begin
+        Parent := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
+
+        WriteFile(Parent + '\created\a.xml');
+        LibraryAssert.IsTrue(Directory.Exists(Parent + '\created'), 'File.Create made the folder');
+
+        File.Copy(Parent + '\created\a.xml', Parent + '\copied\b.xml');
+        LibraryAssert.IsTrue(Directory.Exists(Parent + '\copied'), 'File.Copy made the target folder');
+        LibraryAssert.IsTrue(File.Exists(Parent + '\copied\b.xml'), 'copied file exists');
+
+        File.Rename(Parent + '\copied\b.xml', Parent + '\renamed\c.xml');
+        LibraryAssert.IsTrue(Directory.Exists(Parent + '\renamed'), 'File.Rename made the target folder');
+        LibraryAssert.IsTrue(File.Exists(Parent + '\renamed\c.xml'), 'renamed file exists');
+
+        Directory.Delete(Parent, true);
     end;
 
     local procedure WriteFile(FileName: Text)
