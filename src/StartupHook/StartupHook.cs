@@ -4309,14 +4309,18 @@ internal class StartupHook
 
             // BC builds user-folder subpaths with '\' too (GetUserTempFolder combines
             // "TEMP\\"), so pre-#28 the "directories" were literal backslash-named files
-            // and nothing ever created them as real directories. For normalized paths
-            // under the user folder, materialize the parent so temp-file creation works.
+            // and nothing ever created them as real directories. The user's TEMP folder
+            // always exists on a Windows tier, so it is made here. Any deeper folder is made
+            // only where AL writes (ALCreate, the target of ALCopy/ALRename, temp files,
+            // upload: ExpandFileNameCreatingParent, from the temppath patch, issue #185).
+            // Creating a parent for every path made File.Exists on a missing folder
+            // create the folder.
             if (userFolder != null
                 && fileName.StartsWith(userFolder, StringComparison.OrdinalIgnoreCase))
             {
-                var dir = System.IO.Path.GetDirectoryName(fileName);
-                if (!string.IsNullOrEmpty(dir) && !System.IO.Directory.Exists(dir))
-                    System.IO.Directory.CreateDirectory(dir);
+                var temp = System.IO.Path.Combine(userFolder, "TEMP");
+                if (!System.IO.Directory.Exists(temp))
+                    System.IO.Directory.CreateDirectory(temp);
             }
 
             if (!_expandFileNameLockdownLogged && enforceUserPath)
