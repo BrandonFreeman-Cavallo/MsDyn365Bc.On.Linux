@@ -7,15 +7,19 @@
 // stored 'TEMP\name.png' as the file name because Path.GetFileName only splits at '/'. The
 // PatchTempPath IL patch fixes both and leaves TemporaryPath() as it is.
 //
-// Expected values are what Windows BC 27.5, 28.5 and 29.0 containers reported, except that the
-// files here are all lower case and the order is not checked: Windows matches '*.xml' against
-// 'b.XML' and lists in name order, System.IO on Linux does neither (see KNOWN-LIMITATIONS.md).
+// Issue #183: Windows matches '*.xml' against 'b.XML' and lists in name order. The listing
+// methods of Directory and DirectoryInfo are routed through BcLinuxFileListing (the filelisting
+// patch) to do the same.
+//
+// Expected values are what Windows BC 27.5, 28.5 and 29.0 containers reported.
 dotnet
 {
     assembly("mscorlib")
     {
+        type("System.IO.Directory"; BcLinuxDirectory) { }
         type("System.IO.DirectoryInfo"; BcLinuxDirectoryInfo) { }
         type("System.IO.FileInfo"; BcLinuxFileInfo) { }
+        type("System.IO.SearchOption"; BcLinuxSearchOption) { }
     }
 }
 
@@ -38,9 +42,9 @@ codeunit 70075 "BC Linux Temp Folder IO"
         i: Integer;
         Names: Text;
     begin
-        Folder := TemporaryPath() + 'bclinux-io-175';
+        Folder := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
         WriteFile(Folder + '\a.xml');
-        WriteFile(Folder + '\b.xml');
+        WriteFile(Folder + '\b.XML');
         WriteFile(Folder + '\c.xml');
         WriteFile(Folder + '\d.txt');
         WriteFile(Folder + '\e.xml.bak');
@@ -53,7 +57,57 @@ codeunit 70075 "BC Linux Temp Folder IO"
             Found := Files.GetValue(i);
             Names += '|' + Found.Name;
         end;
-        LibraryAssert.IsTrue(Names.Contains('|a.xml') and Names.Contains('|b.xml') and Names.Contains('|c.xml'), 'file names ' + Names);
+        Found := Files.GetValue(0);
+        LibraryAssert.AreEqual(Folder + '\a.xml', Found.FullName, 'FileInfo.FullName');
+        LibraryAssert.AreEqual(Folder, Dir.FullName, 'DirectoryInfo.FullName');
+        LibraryAssert.AreEqual('|a.xml|b.XML|c.xml', Names, 'GetFiles(*.xml) names in order');
+    end;
+
+    [Test]
+    procedure DirectoryGetFilesIsCaseInsensitiveAndSorted()
+    var
+        Directory: DotNet BcLinuxDirectory;
+        Folder: Text;
+        Files: DotNet Array;
+    begin
+        Folder := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
+        WriteFile(Folder + '\c.xml');
+        WriteFile(Folder + '\B.xml');
+        WriteFile(Folder + '\a.XML');
+        WriteFile(Folder + '\d.txt');
+
+        Files := Directory.GetFiles(Folder, '*.xml');
+        LibraryAssert.AreEqual(3, Files.Length, 'Directory.GetFiles(*.xml) count');
+        LibraryAssert.AreEqual(Folder + '\a.XML', Format(Files.GetValue(0)), 'first');
+        LibraryAssert.AreEqual(Folder + '\B.xml', Format(Files.GetValue(1)), 'second');
+        LibraryAssert.AreEqual(Folder + '\c.xml', Format(Files.GetValue(2)), 'third');
+    end;
+
+    // .NET walks a tree folder by folder: the entries of a folder first, then its subfolders in
+    // the order they were found. A sort of the full paths would put 'sub1\m.xml' between
+    // 'a.xml' and 'z.xml'.
+    [Test]
+    procedure RecursiveListingListsAFolderBeforeItsSubfolders()
+    var
+        Directory: DotNet BcLinuxDirectory;
+        Option: DotNet BcLinuxSearchOption;
+        Folder: Text;
+        Files: DotNet Array;
+    begin
+        Folder := TemporaryPath() + 'bclinux-io-' + DelChr(Format(CreateGuid()), '=', '{}-');
+        WriteFile(Folder + '\z.xml');
+        WriteFile(Folder + '\a.xml');
+        WriteFile(Folder + '\sub2\a.xml');
+        WriteFile(Folder + '\sub1\M.xml');
+        WriteFile(Folder + '\sub1\deeper\k.xml');
+
+        Files := Directory.GetFiles(Folder, '*.xml', Option.AllDirectories);
+        LibraryAssert.AreEqual(5, Files.Length, 'count');
+        LibraryAssert.AreEqual(Folder + '\a.xml', Format(Files.GetValue(0)), '1');
+        LibraryAssert.AreEqual(Folder + '\z.xml', Format(Files.GetValue(1)), '2');
+        LibraryAssert.AreEqual(Folder + '\sub1\M.xml', Format(Files.GetValue(2)), '3');
+        LibraryAssert.AreEqual(Folder + '\sub2\a.xml', Format(Files.GetValue(3)), '4');
+        LibraryAssert.AreEqual(Folder + '\sub1\deeper\k.xml', Format(Files.GetValue(4)), '5');
     end;
 
     [Test]
