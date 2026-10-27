@@ -17,7 +17,7 @@
         "7052": { "label": "BC API" },
         "8080": { "label": "BC web client" }
     },
-    "postCreateCommand": "BC_WEBCLIENT=1 docker compose up -d --wait",
+    "postCreateCommand": "BC_WEBCLIENT=1 BC_WEBCLIENT_PUBLIC_URL=${CODESPACE_NAME:+https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/} docker compose up -d --wait",
     "customizations": {
         "vscode": {
             "extensions": [
