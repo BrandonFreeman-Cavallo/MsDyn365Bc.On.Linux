@@ -135,12 +135,20 @@ namespace Microsoft.AspNetCore.Hosting
                 {
                     app.Use(async (context, nextMiddleware) =>
                     {
+                        var origScheme = context.Request.Scheme;
+                        var origHost = context.Request.Host.Value;
                         var fwdHost = context.Request.Headers["X-Forwarded-Host"].ToString().Split(',')[0].Trim();
                         if (fwdHost.Length > 0)
                             context.Request.Host = new HostString(fwdHost);
                         var fwdProto = context.Request.Headers["X-Forwarded-Proto"].ToString().Split(',')[0].Trim();
                         if (fwdProto == "http" || fwdProto == "https")
                             context.Request.Scheme = fwdProto;
+                        // The same proxy rewrites Origin to match the rewritten Host
+                        // (Origin: http://localhost:<port>). BC compares Origin with the
+                        // request's own origin on POSTs and WebSocket upgrades and rejects a
+                        // mismatch (400 / 403), so translate it the same way.
+                        if (context.Request.Headers["Origin"].ToString() == $"{origScheme}://{origHost}")
+                            context.Request.Headers["Origin"] = $"{context.Request.Scheme}://{context.Request.Host.Value}";
                         await nextMiddleware();
                     });
                 }
