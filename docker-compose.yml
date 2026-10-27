@@ -186,6 +186,9 @@ services:
       # a Codespace, where the browser reaches it through a forwarded https address).
       # Becomes PublicWebBaseUrl; BC builds its resource links from it.
       BC_WEBCLIENT_PUBLIC_URL: ${BC_WEBCLIENT_PUBLIC_URL:-}
+      # Set to 1 behind a proxy that rewrites Host and puts the real name in
+      # X-Forwarded-Host / X-Forwarded-Proto (GitHub Codespaces). See docs/WEBCLIENT-POC.md.
+      BC_WEBCLIENT_TRUST_FORWARDED_HEADERS: ${BC_WEBCLIENT_TRUST_FORWARDED_HEADERS:-}
       # Set to 1 when a reverse proxy in front of the container terminates TLS,
       # so the web client emits https:// in its redirects instead of http://.
       # See docs/WEBCLIENT-POC.md.
