@@ -135,7 +135,6 @@ namespace Microsoft.AspNetCore.Hosting
                 {
                     app.Use(async (context, nextMiddleware) =>
                     {
-                        var origScheme = context.Request.Scheme;
                         var origHost = context.Request.Host.Value;
                         var fwdHost = context.Request.Headers["X-Forwarded-Host"].ToString().Split(',')[0].Trim();
                         if (fwdHost.Length > 0)
@@ -143,11 +142,14 @@ namespace Microsoft.AspNetCore.Hosting
                         var fwdProto = context.Request.Headers["X-Forwarded-Proto"].ToString().Split(',')[0].Trim();
                         if (fwdProto == "http" || fwdProto == "https")
                             context.Request.Scheme = fwdProto;
-                        // The same proxy rewrites Origin to match the rewritten Host
-                        // (Origin: http://localhost:<port>). BC compares Origin with the
-                        // request's own origin on POSTs and WebSocket upgrades and rejects a
-                        // mismatch (400 / 403), so translate it the same way.
-                        if (context.Request.Headers["Origin"].ToString() == $"{origScheme}://{origHost}")
+                        // The same proxy rewrites the host of Origin to match the rewritten Host
+                        // (Origin: http://localhost:<port> or https://localhost:<port>: it keeps
+                        // the browser's scheme, which differs between tunnel clusters). BC compares
+                        // Origin with the request's own origin on POSTs and WebSocket upgrades and
+                        // rejects a mismatch (400 / 403), so translate it the same way: when
+                        // Origin names the original host, whatever the scheme, replace it.
+                        if (Uri.TryCreate(context.Request.Headers["Origin"].ToString(), UriKind.Absolute, out var origin)
+                            && string.Equals(origin.Authority, origHost, StringComparison.OrdinalIgnoreCase))
                             context.Request.Headers["Origin"] = $"{context.Request.Scheme}://{context.Request.Host.Value}";
                         await nextMiddleware();
                     });
