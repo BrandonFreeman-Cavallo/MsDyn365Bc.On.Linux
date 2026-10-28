@@ -33,6 +33,8 @@ Multiple parallel instances: use `-p <project>` with a unique port offset for ev
 
 ### Running AL tests
 
+For the full flow (start BC, install the AL compiler, stage symbols, compile, publish, run tests, common errors), use the `bc-linux-run-tests` skill in `.claude/skills/bc-linux-run-tests/SKILL.md`.
+
 ```bash
 # Publish a test app then run a codeunit range (per-method results require --app)
 ./scripts/run-tests.sh --app MyTestApp.app --codeunit-range 50000..50100
