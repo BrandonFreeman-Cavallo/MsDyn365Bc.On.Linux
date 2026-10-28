@@ -42,7 +42,6 @@ done < <(find "$WORKSPACE" -maxdepth 2 -name app.json -not -path '*/node_modules
 
 # In a Codespace the browser reaches the web client through a forwarded https address, and the
 # proxy rewrites Host and Origin: see docs/WEBCLIENT-POC.md. Outside a Codespace both stay empty.
-export BC_WEBCLIENT=1
 export BC_WEBCLIENT_TRUST_FORWARDED_HEADERS=1
 export BC_WEBCLIENT_PUBLIC_URL="${CODESPACE_NAME:+https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/}"
 # BC installs its test framework (Test Runner, Library Assert, Library Variable Storage,
