@@ -45,4 +45,9 @@ done < <(find "$WORKSPACE" -maxdepth 2 -name app.json -not -path '*/node_modules
 export BC_WEBCLIENT=1
 export BC_WEBCLIENT_TRUST_FORWARDED_HEADERS=1
 export BC_WEBCLIENT_PUBLIC_URL="${CODESPACE_NAME:+https://${CODESPACE_NAME}-8080.${GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN}/}"
+# BC installs its test framework (Test Runner, Library Assert, Library Variable Storage,
+# Permissions Mock, Any, the test libraries) on a clean start only. Recreating just the BC
+# container against an existing database loses them (the republish is refused as a duplicate),
+# so start from nothing: a no-op in a new Codespace, and it makes running this script again safe.
+docker compose down
 docker compose up -d --wait
